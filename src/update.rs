@@ -184,3 +184,26 @@ pub fn run_installer(path: &Path) -> Result<(), String> {
         .map(|_| ())
         .map_err(|e| format!("启动安装程序失败：{e}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 版本号解析() {
+        assert_eq!(parse_ver("0.1.0"), (0, 1, 0));
+        assert_eq!(parse_ver("v1.2.3"), (1, 2, 3));
+        assert_eq!(parse_ver("V2.0"), (2, 0, 0));
+        assert_eq!(parse_ver("1.2.3-beta"), (1, 2, 3));
+        assert_eq!(parse_ver(""), (0, 0, 0));
+    }
+
+    #[test]
+    fn 版本比较() {
+        assert!(is_newer("0.2.0", "0.1.0"));
+        assert!(is_newer("1.0.0", "0.9.9"));
+        assert!(is_newer("0.1.10", "0.1.9"));
+        assert!(!is_newer("0.1.0", "0.1.0"));
+        assert!(!is_newer("0.1.0", "0.2.0"));
+    }
+}
