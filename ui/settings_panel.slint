@@ -948,9 +948,116 @@ export component SettingsPanel inherits Rectangle {
                                 alignment: center; spacing: 12px;
                                 padding: 32px;
                                 Text { text: "FerroxPlorer"; font-size: 24px; font-weight: 700; color: Theme.text; horizontal-alignment: center; }
-                                Text { text: "版本 0.1.0"; font-size: 14px; color: Theme.muted; horizontal-alignment: center; }
+                                Text { text: "版本 " + AppState.app-version; font-size: 14px; color: Theme.muted; horizontal-alignment: center; }
                                 Text { text: "现代化桌面文件管理器\nRust + Slint 实现"; font-size: 13px; color: Theme.muted; horizontal-alignment: center; }
                                 Text { text: "© 2026 FerroxPlorer\n基于 MIT 许可证开源"; font-size: 12px; color: Theme.subtle; horizontal-alignment: center; }
+                            }
+                        }
+
+                        // ── GitHub 代码库 ──
+                        Card {
+                            title: "GitHub 代码库";
+                            SettingRow {
+                                name: "开源仓库";
+                                desc: AppState.repo-url;
+                                VerticalLayout { alignment: center; Btn {
+                                    label: "在 GitHub 上打开";
+                                    clicked => { AppState.open-url(AppState.repo-url); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "问题反馈";
+                                desc: "报告 Bug 或提出功能建议";
+                                last: true;
+                                VerticalLayout { alignment: center; Btn {
+                                    label: "提交 Issue";
+                                    clicked => { AppState.open-url(AppState.repo-url + "/issues"); }
+                                } }
+                            }
+                        }
+
+                        // ── 软件更新（GitHub Releases）──
+                        Card {
+                            title: "软件更新";
+                            SettingRow {
+                                name: AppState.update-state == 3 ? "发现新版本 v" + AppState.update-latest-version
+                                    : AppState.update-state == 5 ? "新版本 v" + AppState.update-latest-version + " 已就绪"
+                                    : "检查更新";
+                                desc: AppState.update-state == 0 ? "从 GitHub Releases 获取最新版本"
+                                    : AppState.update-state == 1 ? "正在检查更新…"
+                                    : AppState.update-state == 2 ? "当前已是最新版本（v" + AppState.app-version + "）"
+                                    : AppState.update-state == 3 ? "当前版本 v" + AppState.app-version + "，可下载更新"
+                                    : AppState.update-state == 4 ? "正在下载更新…"
+                                    : AppState.update-state == 5 ? "点击「安装并重启」完成更新"
+                                    : AppState.update-error;
+                                last: AppState.update-state != 3 && AppState.update-state != 4 && AppState.update-state != 5;
+                                // 右侧按钮随状态切换：检查 / 下载 / 取消 / 安装
+                                VerticalLayout { alignment: center; HorizontalLayout {
+                                    spacing: 8px;
+                                    if AppState.update-state == 0 || AppState.update-state == 2 || AppState.update-state == 6: Btn {
+                                        label: "检查更新"; primary: true;
+                                        clicked => { AppState.check-update(); }
+                                    }
+                                    if AppState.update-state == 1: Btn { label: "检查中…"; }
+                                    if AppState.update-state == 3: Btn {
+                                        label: "下载更新"; primary: true;
+                                        clicked => { AppState.download-update(); }
+                                    }
+                                    if AppState.update-state == 4: Btn {
+                                        label: "取消";
+                                        clicked => { AppState.cancel-download(); }
+                                    }
+                                    if AppState.update-state == 5: Btn {
+                                        label: "安装并重启"; primary: true;
+                                        clicked => { AppState.install-update(); }
+                                    }
+                                } }
+                            }
+                            // 下载进度条（仅下载中显示）
+                            if AppState.update-state == 4: Rectangle {
+                                min-height: 56px;
+                                VerticalLayout {
+                                    padding: 16px; padding-top: 4px;
+                                    spacing: 8px;
+                                    // 进度轨道 + 填充
+                                    Rectangle {
+                                        height: 6px;
+                                        border-radius: 3px;
+                                        background: Theme.dark ? rgba(255, 255, 255, 0.08) : rgba(0, 0, 0, 0.07);
+                                        Rectangle {
+                                            x: 0px; y: 0px;
+                                            width: parent.width * AppState.update-progress;
+                                            height: parent.height;
+                                            border-radius: 3px;
+                                            background: Theme.primary;
+                                            animate width { duration: 120ms; easing: ease-out; }
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        Text {
+                                            text: AppState.update-progress-text;
+                                            font-size: 12px; color: Theme.muted;
+                                            horizontal-stretch: 1;
+                                        }
+                                        Text {
+                                            text: Math.round(AppState.update-progress * 100) + "%";
+                                            font-size: 12px; font-weight: 600; color: Theme.text;
+                                        }
+                                    }
+                                }
+                            }
+                            // 更新说明（发现新版 / 下载中 / 待安装时显示）
+                            if (AppState.update-state == 3 || AppState.update-state == 4 || AppState.update-state == 5) && AppState.update-notes != "": Rectangle {
+                                VerticalLayout {
+                                    padding: 16px; padding-top: 6px;
+                                    spacing: 6px;
+                                    Text { text: "更新说明"; font-size: 12px; font-weight: 700; color: Theme.text; }
+                                    Text {
+                                        text: AppState.update-notes;
+                                        font-size: 12px; color: Theme.muted;
+                                        wrap: word-wrap;
+                                    }
+                                }
                             }
                         }
                     }

@@ -6,6 +6,7 @@ mod config;
 mod fs;
 mod git;
 mod ui_bridge;
+mod update;
 
 slint::include_modules!();
 
@@ -120,6 +121,9 @@ fn main() -> Result<(), slint::PlatformError> {
     // 设备/驱动器热插拔定时轮询：插拔 U 盘/手机或挂载/卸载分区时自动刷新侧边栏与此电脑视图
     bind_device_polling(&ui, &core);
 
+    // 应用更新：关于页 GitHub 链接 + 检查更新 / 带进度下载 / 启动安装
+    bind_update(&ui);
+
     ui.run()
 }
 
@@ -182,6 +186,158 @@ fn bind_device_polling(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             }
         },
     );
+}
+
+/// 绑定应用更新：关于页的 GitHub 链接、检查更新、带进度下载与安装启动。
+/// 网络请求在后台线程执行（ureq 阻塞式），进度经 `invoke_from_event_loop`
+/// 回主线程刷新 —— 与后台文件任务同一模式。
+fn bind_update(ui: &MainWindow) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    let state = ui.global::<AppState>();
+    // 版本号与仓库地址推送到关于页
+    state.set_app_version(update::CURRENT_VERSION.into());
+    state.set_repo_url(update::REPO_URL.into());
+
+    // 用系统默认浏览器打开链接（GitHub 仓库 / Issues）
+    state.on_open_url(|url| {
+        let _ = open::that(url.as_str());
+    });
+
+    // 检查结果与下载产物：用 Arc<Mutex> 存放——工作线程回填结果的
+    // invoke_from_event_loop 闭包要求 Send，Rc<RefCell> 无法跨线程捕获
+    let latest: Arc<Mutex<Option<update::ReleaseInfo>>> = Arc::new(Mutex::new(None));
+    let installer: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    // —— 检查更新 ——
+    {
+        let w = ui.as_weak();
+        let latest = latest.clone();
+        state.on_check_update(move || {
+            if let Some(ui) = w.upgrade() {
+                ui.global::<AppState>().set_update_state(1); // 检查中
+            }
+            let w = w.clone();
+            let latest = latest.clone();
+            std::thread::spawn(move || {
+                let result = update::check_latest();
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(ui) = w.upgrade() else { return };
+                    let st = ui.global::<AppState>();
+                    match result {
+                        Ok(info) => {
+                            if update::is_newer(&info.version, update::CURRENT_VERSION) {
+                                st.set_update_latest_version(info.version.as_str().into());
+                                st.set_update_notes(info.notes.as_str().into());
+                                st.set_update_state(3); // 发现新版
+                                *latest.lock().unwrap() = Some(info);
+                            } else {
+                                st.set_update_state(2); // 已是最新
+                            }
+                        }
+                        Err(e) => {
+                            st.set_update_error(e.into());
+                            st.set_update_state(6); // 出错
+                        }
+                    }
+                });
+            });
+        });
+    }
+
+    // —— 下载更新（带进度）——
+    {
+        let w = ui.as_weak();
+        let latest = latest.clone();
+        let installer = installer.clone();
+        let cancel = cancel.clone();
+        state.on_download_update(move || {
+            let Some(info) = latest.lock().unwrap().clone() else {
+                return;
+            };
+            cancel.store(false, Ordering::Relaxed);
+            if let Some(ui) = w.upgrade() {
+                let st = ui.global::<AppState>();
+                st.set_update_progress(0.0);
+                st.set_update_progress_text("准备下载…".into());
+                st.set_update_state(4); // 下载中
+            }
+            let w = w.clone();
+            let installer = installer.clone();
+            let cancel = cancel.clone();
+            std::thread::spawn(move || {
+                let w_prog = w.clone();
+                let result = update::download(&info, &cancel, move |done, total, speed| {
+                    let frac = if total > 0 {
+                        (done as f32 / total as f32).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let text = format!(
+                        "{} / {} · {}/s",
+                        fs::metadata::human_size(done),
+                        fs::metadata::human_size(total),
+                        fs::metadata::human_size(speed as u64),
+                    );
+                    let w = w_prog.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = w.upgrade() {
+                            let st = ui.global::<AppState>();
+                            st.set_update_progress(frac);
+                            st.set_update_progress_text(text.into());
+                        }
+                    });
+                });
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(ui) = w.upgrade() else { return };
+                    let st = ui.global::<AppState>();
+                    match result {
+                        Ok(path) => {
+                            *installer.lock().unwrap() = Some(path);
+                            st.set_update_state(5); // 下载完成待安装
+                        }
+                        // 用户主动取消：回到「发现新版」可重新下载
+                        Err(e) if e == "已取消" => st.set_update_state(3),
+                        Err(e) => {
+                            st.set_update_error(e.into());
+                            st.set_update_state(6);
+                        }
+                    }
+                });
+            });
+        });
+    }
+
+    // —— 取消下载 ——
+    {
+        let cancel = cancel.clone();
+        state.on_cancel_download(move || {
+            cancel.store(true, Ordering::Relaxed);
+        });
+    }
+
+    // —— 安装并重启：启动安装程序（分离进程）后退出应用，避免 exe 被占用 ——
+    {
+        let w = ui.as_weak();
+        state.on_install_update(move || {
+            let path = installer.lock().unwrap().clone();
+            let Some(path) = path else { return };
+            match update::run_installer(&path) {
+                Ok(()) => {
+                    let _ = slint::quit_event_loop();
+                }
+                Err(e) => {
+                    if let Some(ui) = w.upgrade() {
+                        let st = ui.global::<AppState>();
+                        st.set_update_error(e.into());
+                        st.set_update_state(6);
+                    }
+                }
+            }
+        });
+    }
 }
 
 /// 绑定布局持久化：拖拽分隔条结束后把栏宽/列宽写回配置文件

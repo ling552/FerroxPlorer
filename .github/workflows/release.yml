@@ -1,0 +1,45 @@
+# 发布工作流:推送 v* tag 时构建 Windows 安装程序并上传到 GitHub Release。
+# 应用内「检查更新」读取 Releases API,以此处上传的安装程序作为更新源。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存依赖
+        uses: Swatinem/rust-cache@v2
+
+      - name: 构建 Release 二进制
+        run: cargo build --release
+
+      - name: 提取版本号(去掉 tag 的 v 前缀)
+        id: ver
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: 打包 Windows 安装程序(Inno Setup)
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
+            /DAppVersion=${{ steps.ver.outputs.version }} `
+            installer\installer.iss
+
+      - name: 创建 GitHub Release 并上传安装程序
+        uses: softprops/action-gh-release@v2
+        with:
+          name: FerroxPlorer v${{ steps.ver.outputs.version }}
+          files: installer/Output/FerroxPlorer-Setup-*.exe
+          generate_release_notes: true
