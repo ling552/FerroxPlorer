@@ -2,7 +2,9 @@
 
 use crate::app::{AppCore, TabKind};
 use crate::fs::{disk, metadata};
-use crate::{AclAce, AppState, CertInfo, Crumb, FileEntry, MainWindow, MetaRow, NavItem, TabInfo};
+use crate::{
+    AclAce, AppState, CertInfo, Crumb, FileEntry, MainWindow, MetaRow, NavItem, NetAccount, TabInfo,
+};
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel,
 };
@@ -336,7 +338,13 @@ fn spawn_thumbnails(ui: &MainWindow, jobs: Vec<IconJob>, generation: u64, side: 
             }
             // 走带缓存的入口：按类型/文件提取一次并写入缓存，后续同类型条目同步命中
             let icon = crate::fs::thumbnail::load_cached_request(&request, THUMB_SIZE);
-            eprintln!("[icon-debug] side={} row={} request={:?} ok={}", if side == ThumbSide::Left { "L" } else { "R" }, row, request, icon.is_some());
+            eprintln!(
+                "[icon-debug] side={} row={} request={:?} ok={}",
+                if side == ThumbSide::Left { "L" } else { "R" },
+                row,
+                request,
+                icon.is_some()
+            );
             let Some(icon) = icon else {
                 continue;
             };
@@ -793,7 +801,10 @@ pub fn build_sidebar(
                     .find(|(p, _)| *p == it.path.trim_end_matches('\\').to_lowercase())
                     .map(|(_, g)| *g);
                 if let Some(glyph) = hit {
-                    items.push(glyphize(mk(&it.name, it.path.clone(), "", "", active), glyph));
+                    items.push(glyphize(
+                        mk(&it.name, it.path.clone(), "", "", active),
+                        glyph,
+                    ));
                 } else {
                     // 图标取显示名首字符（中文文件夹名友好）
                     let icon = it
@@ -953,23 +964,60 @@ pub fn build_sidebar(
     section_collapsed = collapsed.contains("系统");
     items.push(header("系统", section_collapsed));
     if !section_collapsed {
-        items.push(mk(
+        // 真实系统图标（Stock 图标）：回收站按空/满取对应图标（跟随系统状态变化），
+        // 网络位置取「网络」图标；提取失败回退到 MDL2 矢量字形（非文字色块）。
+        let mk_sys = |label: &str, path: &str, stock, glyph: &str, active: bool| {
+            let mut item = mk(label, path.to_string(), "", "", active);
+            match crate::fs::thumbnail::stock_icon_cached(stock, THUMB_SIZE) {
+                Some(icon) => {
+                    item.thumb = image_from(&icon);
+                    item.has_thumb = true;
+                }
+                None => {
+                    item.icon = glyph.into();
+                    item.icon_class = "qa-glyph".into();
+                    item.has_thumb = false;
+                }
+            }
+            item
+        };
+        let recycle_stock = match crate::fs::recyclebin::is_empty() {
+            Some(false) => crate::fs::thumbnail::StockIcon::RecyclerFull,
+            _ => crate::fs::thumbnail::StockIcon::RecyclerEmpty,
+        };
+        items.push(mk_sys(
             "回收站",
-            "recycle://".to_string(),
-            "回",
-            "",
+            "recycle://",
+            recycle_stock,
+            "\u{E74D}",
             active_str == "recycle://",
         ));
-        items.push(mk(
+        items.push(mk_sys(
             "网络位置",
-            "network://".to_string(),
-            "网",
-            "",
+            "network://",
+            crate::fs::thumbnail::StockIcon::Network,
+            "\u{E968}",
             active_str == "network://",
         ));
     }
 
     ModelRc::new(VecModel::from(items))
+}
+
+/// 把已保存的网络位置推送到设置「云存储账号」页的列表模型
+pub fn push_network_locations(ui: &MainWindow, core: &AppCore) {
+    let items: Vec<NetAccount> = core
+        .config
+        .network_locations
+        .iter()
+        .map(|l| NetAccount {
+            name: l.name.clone().into(),
+            server: l.server.clone().into(),
+            drive: l.drive.clone().unwrap_or_default().into(),
+        })
+        .collect();
+    ui.global::<AppState>()
+        .set_net_locations(ModelRc::new(VecModel::from(items)));
 }
 
 /// 供哈希回调返回 SharedString

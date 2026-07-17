@@ -16,6 +16,14 @@ export component DualPane inherits Rectangle {
 
     background: Theme.surface.with-alpha(Theme.panel-alpha);
 
+    // 左右面板分隔的窗口 x 坐标（左面板右缘），供跨面板拖拽判定落点归属。
+    // 用计算属性 + changed 回调维护：此前只在 changed width 里更新，而 changed
+    // 不会因初始求值触发——窗口不缩放时 pane-split-x 恒为 0，右→左拖放
+    // 的 "x < pane-split-x" 判定永远不成立（左→右因 "x > 0" 恒真反而"正常"）。
+    property <length> split-x: left-panel.absolute-position.x + left-panel.width;
+    init => { AppState.pane-split-x = self.split-x; }
+    changed split-x => { AppState.pane-split-x = self.split-x; }
+
     HorizontalLayout {
         padding: 4px;
         spacing: 0px;
@@ -30,8 +38,6 @@ export component DualPane inherits Rectangle {
             // 半透明时大幅减淡面板底色（避免白板压壁纸），深色主题跟随 surface
             background: Theme.surface.with-alpha(Theme.translucent ? 0.16 : 0.52);
             clip: true;
-            // 维护左右面板分隔的窗口 x 坐标（左面板右缘），供跨面板拖拽判定落点归属
-            changed width => { AppState.pane-split-x = self.absolute-position.x + self.width; }
 
             // 点击面板任意空白区即激活左面板
             activate-touch := TouchArea {

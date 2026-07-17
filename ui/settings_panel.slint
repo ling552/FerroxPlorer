@@ -511,16 +511,6 @@ export component SettingsPanel inherits Rectangle {
                                 } }
                             }
                         }
-
-                        Card {
-                            title: "更新";
-                            SettingRow {
-                                name: "检查更新";
-                                desc: "当前版本 0.1.0";
-                                last: true;
-                                VerticalLayout { alignment: center; Btn { label: "立即检查更新"; } }
-                            }
-                        }
                     }
 
                     // ── 外观 ──
@@ -597,7 +587,7 @@ export component SettingsPanel inherits Rectangle {
                             }
                             SettingRow {
                                 name: "不透明度";
-                                desc: "半透明时窗面的基础不透明程度 (30% – 100%), 与「模糊度」相互独立";
+                                desc: "半透明时窗面的基础不透明程度 (30% – 100%), 与\"模糊度\"相互独立";
                                 VerticalLayout {
                                     alignment: center;
                                     HorizontalLayout {
@@ -619,7 +609,7 @@ export component SettingsPanel inherits Rectangle {
                             }
                             SettingRow {
                                 name: "模糊度";
-                                desc: "磨砂浓度分 6 档调节, 与「不透明度」相互独立. 档位越高磨砂越浓 (但始终留有透光, 不会糊成一片纯色); 最低档为不模糊的清透玻璃";
+                                desc: "磨砂浓度分 6 档调节, 与\"不透明度\"相互独立. 档位越高磨砂越浓 (但始终留有透光, 不会糊成一片纯色); 最低档为不模糊的清透玻璃";
                                 last: true;
                                 VerticalLayout {
                                     alignment: center;
@@ -895,45 +885,85 @@ export component SettingsPanel inherits Rectangle {
                             }
                             SettingRow {
                                 name: "重建索引";
-                                desc: "清除并重新建立全部索引数据";
-                                last: true;
-                                VerticalLayout { alignment: center; Btn { label: "重建索引"; } }
+                                desc: AppState.index-state == 1 ? "正在重建索引…"
+                                    : (AppState.index-info == "" ? "清除并重新建立全部索引数据" : AppState.index-info);
+                                last: AppState.index-state != 1;
+                                VerticalLayout { alignment: center; Btn {
+                                    label: AppState.index-state == 1 ? "重建中…" : "重建索引";
+                                    clicked => { if (AppState.index-state != 1) { AppState.rebuild-index(); } }
+                                } }
+                            }
+                            // 重建进度条(仅重建中显示)
+                            if AppState.index-state == 1: Rectangle {
+                                min-height: 56px;
+                                VerticalLayout {
+                                    padding: 16px; padding-top: 4px;
+                                    spacing: 8px;
+                                    Rectangle {
+                                        height: 6px;
+                                        border-radius: 3px;
+                                        background: Theme.dark ? rgba(255, 255, 255, 0.08) : rgba(0, 0, 0, 0.07);
+                                        Rectangle {
+                                            x: 0px; y: 0px;
+                                            width: parent.width * AppState.index-progress;
+                                            height: parent.height;
+                                            border-radius: 3px;
+                                            background: Theme.primary;
+                                            animate width { duration: 120ms; easing: ease-out; }
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        Text {
+                                            text: AppState.index-progress-text;
+                                            font-size: 12px; color: Theme.muted;
+                                            overflow: elide;
+                                            horizontal-stretch: 1;
+                                        }
+                                        Text {
+                                            text: Math.round(AppState.index-progress * 100) + "%";
+                                            font-size: 12px; font-weight: 600; color: Theme.text;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
 
-                    // ── 云存储账号 ──
+                    // ── 云存储账号(当前实现:SMB 网络位置管理) ──
                     if current-section == "cloud": VerticalLayout {
                         spacing: 16px;
                         SectionTitle { text: "云存储账号"; }
 
                         Card {
-                            title: "已连接账号";
-                            SettingRow {
-                                name: "OneDrive";
-                                desc: "已连接 · user@example.com";
-                                VerticalLayout { alignment: center; Btn { label: "管理"; } }
-                            }
-                            SettingRow {
-                                name: "阿里云 OSS";
-                                desc: "未连接";
-                                VerticalLayout { alignment: center; Btn { label: "连接"; } }
-                            }
-                            SettingRow {
-                                name: "WebDAV (坚果云等)";
-                                desc: "未连接";
+                            title: "已保存的网络位置";
+                            // 空列表提示
+                            if AppState.net-locations.length == 0: SettingRow {
+                                name: "暂无已保存的连接";
+                                desc: "点击下方\"添加网络位置\"连接 SMB 共享";
                                 last: true;
-                                VerticalLayout { alignment: center; Btn { label: "连接"; } }
+                                VerticalLayout { alignment: center; }
+                            }
+                            for acc[i] in AppState.net-locations: SettingRow {
+                                name: acc.name;
+                                desc: acc.drive == "" ? acc.server : acc.server + " · 已挂载到 " + acc.drive;
+                                last: i == AppState.net-locations.length - 1;
+                                VerticalLayout { alignment: center; Btn {
+                                    label: "断开并移除";
+                                    clicked => { AppState.remove-network-location(acc.name); }
+                                } }
                             }
                         }
 
                         Card {
                             title: "";
                             SettingRow {
-                                name: "添加云存储账号";
-                                desc: "支持 OneDrive, 阿里云 OSS, 腾讯 COS, S3, WebDAV, SFTP";
+                                name: "添加网络位置";
+                                desc: "连接 SMB 共享 (\\\\server\\share) 并挂载为驱动器;OneDrive / OSS / S3 等云盘暂未支持";
                                 last: true;
-                                VerticalLayout { alignment: center; Btn { label: "添加账号"; primary: true; } }
+                                VerticalLayout { alignment: center; Btn {
+                                    label: "添加网络位置"; primary: true;
+                                    clicked => { AppState.netloc-dialog-open = true; }
+                                } }
                             }
                         }
                     }
@@ -950,7 +980,7 @@ export component SettingsPanel inherits Rectangle {
                                 Text { text: "FerroxPlorer"; font-size: 24px; font-weight: 700; color: Theme.text; horizontal-alignment: center; }
                                 Text { text: "版本 " + AppState.app-version; font-size: 14px; color: Theme.muted; horizontal-alignment: center; }
                                 Text { text: "现代化桌面文件管理器\nRust + Slint 实现"; font-size: 13px; color: Theme.muted; horizontal-alignment: center; }
-                                Text { text: "© 2026 FerroxPlorer\n基于 MIT 许可证开源"; font-size: 12px; color: Theme.subtle; horizontal-alignment: center; }
+                                Text { text: "© 2026 皊零\n基于 MIT 许可证开源"; font-size: 12px; color: Theme.subtle; horizontal-alignment: center; }
                             }
                         }
 
@@ -985,10 +1015,10 @@ export component SettingsPanel inherits Rectangle {
                                     : "检查更新";
                                 desc: AppState.update-state == 0 ? "从 GitHub Releases 获取最新版本"
                                     : AppState.update-state == 1 ? "正在检查更新…"
-                                    : AppState.update-state == 2 ? "当前已是最新版本（v" + AppState.app-version + "）"
-                                    : AppState.update-state == 3 ? "当前版本 v" + AppState.app-version + "，可下载更新"
+                                    : AppState.update-state == 2 ? "当前已是最新版本 (v" + AppState.app-version + ")"
+                                    : AppState.update-state == 3 ? "当前版本 v" + AppState.app-version + ", 可下载更新"
                                     : AppState.update-state == 4 ? "正在下载更新…"
-                                    : AppState.update-state == 5 ? "点击「安装并重启」完成更新"
+                                    : AppState.update-state == 5 ? "点击\"安装并重启\"完成更新"
                                     : AppState.update-error;
                                 last: AppState.update-state != 3 && AppState.update-state != 4 && AppState.update-state != 5;
                                 // 右侧按钮随状态切换：检查 / 下载 / 取消 / 安装

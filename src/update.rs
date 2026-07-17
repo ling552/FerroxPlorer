@@ -35,17 +35,13 @@ pub struct ReleaseInfo {
 
 /// 解析 "x.y.z" 版本号为数字元组（缺段按 0，非数字段截断）
 fn parse_ver(v: &str) -> (u64, u64, u64) {
-    let mut it = v
-        .trim()
-        .trim_start_matches(['v', 'V'])
-        .split('.')
-        .map(|s| {
-            s.chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect::<String>()
-                .parse::<u64>()
-                .unwrap_or(0)
-        });
+    let mut it = v.trim().trim_start_matches(['v', 'V']).split('.').map(|s| {
+        s.chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse::<u64>()
+            .unwrap_or(0)
+    });
     (
         it.next().unwrap_or(0),
         it.next().unwrap_or(0),
@@ -75,9 +71,7 @@ pub fn check_latest() -> Result<ReleaseInfo, String> {
             ureq::Error::Transport(t) => format!("网络请求失败：{t}"),
         })?;
 
-    let json: serde_json::Value = resp
-        .into_json()
-        .map_err(|e| format!("解析响应失败：{e}"))?;
+    let json: serde_json::Value = resp.into_json().map_err(|e| format!("解析响应失败：{e}"))?;
 
     let tag = json["tag_name"].as_str().unwrap_or_default();
     if tag.is_empty() {
@@ -134,8 +128,7 @@ pub fn download(
         .unwrap_or(info.asset_size);
 
     let dest = std::env::temp_dir().join(&info.asset_name);
-    let mut file =
-        File::create(&dest).map_err(|e| format!("创建临时文件失败：{e}"))?;
+    let mut file = File::create(&dest).map_err(|e| format!("创建临时文件失败：{e}"))?;
 
     let mut reader = resp.into_reader();
     let mut buf = [0u8; 64 * 1024];

@@ -78,22 +78,31 @@ impl TabSession {
         let key = self.sort_key.clone();
         let asc = self.sort_asc;
         let folders_first = self.folders_first;
-        self.entries.sort_by(|a, b| {
-            if folders_first && a.is_dir != b.is_dir {
-                return b.is_dir.cmp(&a.is_dir); // 文件夹在前
-            }
-            let ord = match key.as_str() {
-                "size" => a.size_bytes.cmp(&b.size_bytes),
-                "modified" => a.modified_ts.cmp(&b.modified_ts),
-                "kind" => a.kind.cmp(&b.kind),
-                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-            };
-            if asc {
-                ord
-            } else {
-                ord.reverse()
-            }
-        });
+        // 「此电脑」视图固定按盘符（路径）升序：驱动器 C:\ D:\ … 在前、便携设备在后。
+        // 若沿用按名称排序，卷标（如 "Data (D:)" < "Windows (C:)"）会导致 D 盘排在 C 盘前。
+        let is_this_pc =
+            self.history.current().to_string_lossy() == crate::fs::virtualfs::THIS_PC_PATH;
+        if is_this_pc {
+            self.entries
+                .sort_by(|a, b| a.path.to_lowercase().cmp(&b.path.to_lowercase()));
+        } else {
+            self.entries.sort_by(|a, b| {
+                if folders_first && a.is_dir != b.is_dir {
+                    return b.is_dir.cmp(&a.is_dir); // 文件夹在前
+                }
+                let ord = match key.as_str() {
+                    "size" => a.size_bytes.cmp(&b.size_bytes),
+                    "modified" => a.modified_ts.cmp(&b.modified_ts),
+                    "kind" => a.kind.cmp(&b.kind),
+                    _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                };
+                if asc {
+                    ord
+                } else {
+                    ord.reverse()
+                }
+            });
+        }
 
         let q = self.search.to_lowercase();
         self.filtered = self

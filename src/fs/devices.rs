@@ -382,7 +382,10 @@ fn list_content_win(vpath: &str) -> windows::core::Result<Vec<Entry>> {
                         // COM 契约：GetValue 返回的 PROPVARIANT 由调用方释放。
                         // VT_DATE 是标量本为 no-op，但不合规驱动可能返回分配型变体
                         unsafe {
-                            let _ = windows::Win32::System::Com::StructuredStorage::PropVariantClear(&mut pv);
+                            let _ =
+                                windows::Win32::System::Com::StructuredStorage::PropVariantClear(
+                                    &mut pv,
+                                );
                         }
                         let local_secs = local_secs?;
                         use chrono::TimeZone;

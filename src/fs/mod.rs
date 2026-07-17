@@ -3,6 +3,8 @@
 pub mod clipboard;
 pub mod disk;
 pub mod hash;
+// 文件名索引：后台重建（带进度）+ 深层搜索加速
+pub mod index;
 pub mod metadata;
 pub mod network;
 pub mod openwith;

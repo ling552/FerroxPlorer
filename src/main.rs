@@ -95,6 +95,32 @@ fn main() -> Result<(), slint::PlatformError> {
         state.set_dual_ratio(lay.dual_ratio.clamp(0.15, 0.85));
     }
 
+    // 恢复上次关闭时的窗口位置与大小（物理像素；win_w<=0 表示首启，用默认值）
+    {
+        let (x, y, w, h, maximized) = {
+            let lay = &core.borrow().config.layout;
+            (
+                lay.win_x,
+                lay.win_y,
+                lay.win_w,
+                lay.win_h,
+                lay.win_maximized,
+            )
+        };
+        if w > 200 && h > 200 {
+            ui.window()
+                .set_size(slint::PhysicalSize::new(w as u32, h as u32));
+            ui.window().set_position(slint::PhysicalPosition::new(x, y));
+        }
+        if maximized {
+            ui.window().set_maximized(true);
+            ui.set_window_maximized(true);
+        }
+    }
+
+    // 启动时推送已保存的网络位置列表（设置「云存储账号」页展示）
+    ui_bridge::push_network_locations(&ui, &core.borrow());
+
     // —— 绑定全部回调 ——
     bind_navigation(&ui, &core);
     bind_selection(&ui, &core);
@@ -104,7 +130,7 @@ fn main() -> Result<(), slint::PlatformError> {
     bind_view_and_search(&ui, &core);
     bind_hash(&ui, &core);
     bind_tabs(&ui, &core);
-    bind_window_chrome(&ui);
+    bind_window_chrome(&ui, &core);
     bind_layout(&ui, &core);
     bind_settings(&ui, &core);
     bind_right_pane(&ui, &core);
@@ -122,7 +148,10 @@ fn main() -> Result<(), slint::PlatformError> {
     bind_device_polling(&ui, &core);
 
     // 应用更新：关于页 GitHub 链接 + 检查更新 / 带进度下载 / 启动安装
-    bind_update(&ui);
+    bind_update(&ui, &core);
+
+    // 文件名索引：重建（带进度）+ 后台索引开关的启动自动重建
+    bind_index(&ui, &core);
 
     ui.run()
 }
@@ -142,6 +171,13 @@ fn device_topology_signature() -> String {
         sig.push_str(&d.total.to_string());
         sig.push(';');
     }
+    // 回收站空/满状态：变化时侧边栏图标需跟随切换（空→满 / 清空）
+    sig.push('|');
+    sig.push(if fs::recyclebin::is_empty().unwrap_or(true) {
+        '0'
+    } else {
+        '1'
+    });
     sig
 }
 
@@ -191,7 +227,7 @@ fn bind_device_polling(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
 /// 绑定应用更新：关于页的 GitHub 链接、检查更新、带进度下载与安装启动。
 /// 网络请求在后台线程执行（ureq 阻塞式），进度经 `invoke_from_event_loop`
 /// 回主线程刷新 —— 与后台文件任务同一模式。
-fn bind_update(ui: &MainWindow) {
+fn bind_update(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -321,11 +357,16 @@ fn bind_update(ui: &MainWindow) {
     // —— 安装并重启：启动安装程序（分离进程）后退出应用，避免 exe 被占用 ——
     {
         let w = ui.as_weak();
+        let c = core.clone();
         state.on_install_update(move || {
             let path = installer.lock().unwrap().clone();
             let Some(path) = path else { return };
             match update::run_installer(&path) {
                 Ok(()) => {
+                    // 退出前保存窗口几何，安装重启后可恢复位置
+                    if let Some(ui) = w.upgrade() {
+                        save_window_geometry(&ui, &c);
+                    }
                     let _ = slint::quit_event_loop();
                 }
                 Err(e) => {
@@ -338,6 +379,80 @@ fn bind_update(ui: &MainWindow) {
             }
         });
     }
+}
+
+// ─── 文件名索引 ───
+
+/// 绑定索引重建：设置页「重建索引」按钮 + 后台索引开关的启动自动重建
+fn bind_index(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
+    let state = ui.global::<AppState>();
+    // 启动时推送已有索引的概况（惰性加载磁盘索引文件）
+    {
+        let info = fs::index::summary();
+        if !info.is_empty() {
+            state.set_index_info(info.into());
+        }
+    }
+
+    let w = ui.as_weak();
+    let c = core.clone();
+    state.on_rebuild_index(move || {
+        if let Some(ui) = w.upgrade() {
+            start_index_rebuild(&ui, &c);
+        }
+    });
+
+    // 后台索引开启且尚无索引文件：启动时静默自动重建
+    let auto = {
+        let cc = core.borrow();
+        cc.config.settings.background_index && !fs::index::exists()
+    };
+    if auto {
+        start_index_rebuild(ui, core);
+    }
+}
+
+/// 启动一次后台索引重建（已在重建中则忽略），进度回填到设置页进度条
+fn start_index_rebuild(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
+    if fs::index::is_rebuilding() {
+        return;
+    }
+    let scope = core.borrow().config.settings.index_location.clone();
+    let st = ui.global::<AppState>();
+    st.set_index_state(1);
+    st.set_index_progress(0.0);
+    st.set_index_progress_text("正在枚举目录…".into());
+
+    let w = ui.as_weak();
+    std::thread::spawn(move || {
+        let w_prog = w.clone();
+        let result = fs::index::rebuild(&scope, move |frac, count, current| {
+            let text = if current.is_empty() {
+                format!("已索引 {} 项", count)
+            } else {
+                format!("已索引 {} 项 · {}", count, current)
+            };
+            let w = w_prog.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = w.upgrade() {
+                    let st = ui.global::<AppState>();
+                    st.set_index_progress(frac);
+                    st.set_index_progress_text(text.into());
+                }
+            });
+        });
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(ui) = w.upgrade() else { return };
+            let st = ui.global::<AppState>();
+            st.set_index_state(0);
+            match result {
+                Ok(count) => {
+                    st.set_index_info(format!("索引就绪：共 {} 项，深层搜索可用", count).into())
+                }
+                Err(e) => st.set_index_info(format!("重建失败：{}", e).into()),
+            }
+        });
+    });
 }
 
 /// 绑定布局持久化：拖拽分隔条结束后把栏宽/列宽写回配置文件
@@ -1164,7 +1279,8 @@ fn enqueue_compress(ui: &MainWindow, c: &Rc<RefCell<AppCore>>, idx: i32, fmt: &s
     // 输出路径入队时即确定（重名自动避让），由后台任务流式写入。
     // 立即占位创建空文件：任务串行执行，若不占位，排队中的同名压缩任务
     // 在入队时看不到前一任务的产物，会解析到相同路径并互相覆盖/误删。
-    let target = ops::resolve_conflict(dst_dir.join(format!("{}.{}", ops::archive_stem(&items), ext)));
+    let target =
+        ops::resolve_conflict(dst_dir.join(format!("{}.{}", ops::archive_stem(&items), ext)));
     let _ = std::fs::File::create(&target);
     c.borrow_mut().task_queue.push_back(fs::tasks::Job {
         kind: fs::tasks::TaskKind::Compress,
@@ -1175,7 +1291,13 @@ fn enqueue_compress(ui: &MainWindow, c: &Rc<RefCell<AppCore>>, idx: i32, fmt: &s
 }
 
 /// 在指定面板执行行内重命名提交并刷新该面板（记录撤销）
-fn rename_in_pane(ui: &MainWindow, c: &Rc<RefCell<AppCore>>, right: bool, idx: i32, new_name: &str) {
+fn rename_in_pane(
+    ui: &MainWindow,
+    c: &Rc<RefCell<AppCore>>,
+    right: bool,
+    idx: i32,
+    new_name: &str,
+) {
     let old = c
         .borrow()
         .pane_entry_at(right, idx as usize)
@@ -1632,6 +1754,8 @@ fn bind_navigation(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                     st.set_netloc_server("".into());
                     st.set_netloc_user("".into());
                     st.set_netloc_pass("".into());
+                    // 刷新设置「云存储账号」页的已保存列表
+                    ui_bridge::push_network_locations(&ui, &c.borrow());
                     navigate_to(&ui, &c, PathBuf::from(drive));
                 }
                 None => {
@@ -1665,7 +1789,13 @@ fn bind_navigation(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                     crate::fs::network::unmount_smb(&d);
                 }
             }
-            navigate_to(&ui, &c, PathBuf::from("network://"));
+            // 刷新设置「云存储账号」页的已保存列表；若正停留在网络位置视图则同步刷新
+            ui_bridge::push_network_locations(&ui, &c.borrow());
+            let at_network =
+                c.borrow().active_tab().history.current().to_string_lossy() == "network://";
+            if at_network {
+                load_current(&ui, &c);
+            }
         }
     });
 
@@ -2107,7 +2237,26 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     state.on_delete_selected(move || {
         if let Some(ui) = w.upgrade() {
             let right = toolbar_routes_right(&ui);
+            // 「此电脑」视图中选中的是驱动器/设备，禁止删除
+            let at_this_pc = c.borrow().pane(right).history.current().to_string_lossy()
+                == fs::virtualfs::THIS_PC_PATH;
+            if at_this_pc {
+                ui.global::<AppState>()
+                    .set_status_text("此电脑中的驱动器与设备无法删除".into());
+                return;
+            }
             let paths = c.borrow().pane_selected_paths(right);
+            // 防御：过滤驱动器根路径（如 C:\），避免任何入口误删整盘
+            let paths: Vec<PathBuf> = paths
+                .into_iter()
+                .filter(|p| {
+                    let s = p.to_string_lossy();
+                    !(s.len() == 3 && s.as_bytes()[1] == b':')
+                })
+                .collect();
+            if paths.is_empty() {
+                return;
+            }
             let n = paths.len();
             // 移入回收站（可还原），与资源管理器一致
             let msg = match fs::recyclebin::move_to_recycle_bin(&paths) {
@@ -3123,6 +3272,28 @@ fn bind_view_and_search(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         }
     });
 
+    // 交换左右面板：活动标签会话与右侧独立面板整体互换（含导航历史/排序/选中）
+    let w = ui.as_weak();
+    let c = core.clone();
+    state.on_swap_panes(move || {
+        if let Some(ui) = w.upgrade() {
+            {
+                let mut core = c.borrow_mut();
+                // 设置标签页不参与交换（右面板无法承载设置界面）
+                if core.active_tab().kind != app::TabKind::Files {
+                    return;
+                }
+                let active = core.active;
+                // 显式重借用出 &mut AppCore：RefMut 每次字段访问都经 DerefMut，
+                // 直接对两个字段取 &mut 会被判成对整个结构的双重可变借用
+                let core = &mut *core;
+                std::mem::swap(&mut core.tabs[active], &mut core.right_pane);
+            }
+            load_current(&ui, &c);
+            load_right(&ui, &c);
+        }
+    });
+
     // 双面板比例拖拽结束：持久化左侧占比
     let w = ui.as_weak();
     let c = core.clone();
@@ -3145,6 +3316,50 @@ fn bind_view_and_search(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     let c = core.clone();
     state.on_do_search(move |text| {
         if let Some(ui) = w.upgrade() {
+            // 清空搜索：重新读取当前目录（深层搜索可能已把 entries 换成索引结果）
+            if text.is_empty() {
+                {
+                    let mut core = c.borrow_mut();
+                    core.active_tab_mut().search.clear();
+                }
+                ui.global::<AppState>().set_search_text(text);
+                load_current(&ui, &c);
+                return;
+            }
+            // 深层搜索：开启「搜索子文件夹」且当前为真实目录时，用文件名索引
+            // 在当前目录范围内查找；索引未建立时回退到当前目录过滤
+            let deep_dir = {
+                let core = c.borrow();
+                let tab = core.active_tab();
+                let path = tab.history.current().clone();
+                let is_virtual = fs::virtualfs::is_virtual(&path.to_string_lossy());
+                if core.config.settings.search_subfolders && !is_virtual {
+                    Some((path, core.config.settings.case_sensitive))
+                } else {
+                    None
+                }
+            };
+            if let Some((dir, case_sensitive)) = deep_dir {
+                if let Some(results) = fs::index::search(&dir, text.as_str(), case_sensitive, 1000)
+                {
+                    let n = results.len();
+                    {
+                        let mut core = c.borrow_mut();
+                        let tab = core.active_tab_mut();
+                        tab.entries = results;
+                        tab.search = text.to_string();
+                        tab.rebuild();
+                    }
+                    let st = ui.global::<AppState>();
+                    st.set_search_text(text);
+                    st.set_status_text(format!("深层搜索：含子文件夹共 {} 个匹配项", n).into());
+                    ui_bridge::push_entries(&ui, &c.borrow());
+                    return;
+                }
+                ui.global::<AppState>().set_status_text(
+                    "尚未建立索引，已在当前目录过滤;可在 设置 > 搜索与索引 中重建索引".into(),
+                );
+            }
             {
                 let mut core = c.borrow_mut();
                 let tab = core.active_tab_mut();
@@ -3297,12 +3512,21 @@ fn show_open_with_dialog(_ui: &MainWindow, _path: &str) {}
 fn bind_tabs(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     let state = ui.global::<AppState>();
 
-    // 新建标签页
+    // 新建标签页：起始位置遵循设置「新标签页默认位置」
     let w = ui.as_weak();
     let c = core.clone();
     state.on_new_tab(move || {
         if let Some(ui) = w.upgrade() {
-            let start = dirs::home_dir().unwrap_or_else(|| PathBuf::from("C:\\"));
+            let start = {
+                let core = c.borrow();
+                match core.config.settings.new_tab_location.as_str() {
+                    "this-pc" => PathBuf::from(fs::virtualfs::THIS_PC_PATH),
+                    // 上次目录 = 当前活动标签所在目录
+                    "last" => core.active_tab().history.current().clone(),
+                    // quick（快速访问）与未知值回退到用户主目录
+                    _ => home_start_path(),
+                }
+            };
             c.borrow_mut().new_tab(start);
             load_current(&ui, &c);
         }
@@ -3352,7 +3576,28 @@ fn bind_tabs(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
 
 // ─── 窗口控制（无边框自绘标题栏）───
 
-fn bind_window_chrome(ui: &MainWindow) {
+/// 把当前窗口位置/大小/最大化状态写回配置（应用关闭或安装更新退出前调用）。
+/// 最大化时仅记录标志，不覆盖已保存的常规尺寸——还原后仍回到之前的大小。
+fn save_window_geometry(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
+    let maximized = ui.window().is_maximized();
+    let mut c = core.borrow_mut();
+    let lay = &mut c.config.layout;
+    lay.win_maximized = maximized;
+    if !maximized {
+        let pos = ui.window().position();
+        let size = ui.window().size();
+        // 过滤异常值（最小化中关闭等场景可能拿到 0 尺寸）
+        if size.width > 200 && size.height > 200 {
+            lay.win_x = pos.x;
+            lay.win_y = pos.y;
+            lay.win_w = size.width as i32;
+            lay.win_h = size.height as i32;
+        }
+    }
+    c.config.save();
+}
+
+fn bind_window_chrome(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     // 最小化
     let w = ui.as_weak();
     ui.on_minimize_window(move || {
@@ -3374,10 +3619,12 @@ fn bind_window_chrome(ui: &MainWindow) {
         }
     });
 
-    // 关闭窗口
+    // 关闭窗口：先保存窗口几何（下次启动恢复位置/大小），再隐藏退出
     let w = ui.as_weak();
+    let c = core.clone();
     ui.on_close_window(move || {
         if let Some(ui) = w.upgrade() {
+            save_window_geometry(&ui, &c);
             let _ = ui.window().hide();
         }
     });

@@ -3,6 +3,25 @@
 
 use super::metadata::Entry;
 
+/// 回收站是否为空（侧栏图标据此显示空/满状态）。查询失败返回 None。
+pub fn is_empty() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::Shell::{SHQueryRecycleBinW, SHQUERYRBINFO};
+        let mut info = SHQUERYRBINFO {
+            cbSize: std::mem::size_of::<SHQUERYRBINFO>() as u32,
+            ..Default::default()
+        };
+        // 空路径 = 查询所有驱动器回收站合计
+        unsafe { SHQueryRecycleBinW(windows::core::PCWSTR::null(), &mut info).ok()? };
+        Some(info.i64NumItems == 0)
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// 列出回收站中的已删除项目。非 Windows 或失败时返回空列表。
 pub fn list_recycle_bin() -> Vec<Entry> {
     #[cfg(windows)]

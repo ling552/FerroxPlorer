@@ -21,6 +21,19 @@ pub struct Layout {
     /// 双面板左侧占比（0.15..0.85），拖拽中间分隔条调整后持久化
     #[serde(default = "default_dual_ratio")]
     pub dual_ratio: f32,
+    /// 主窗口几何（物理像素）：关闭时保存、下次启动恢复。
+    /// win_w<=0 表示尚未记录过（首启用默认尺寸）。
+    #[serde(default)]
+    pub win_x: i32,
+    #[serde(default)]
+    pub win_y: i32,
+    #[serde(default)]
+    pub win_w: i32,
+    #[serde(default)]
+    pub win_h: i32,
+    /// 关闭时是否处于最大化（恢复时仅置最大化标志，不覆盖记录的常规尺寸）
+    #[serde(default)]
+    pub win_maximized: bool,
 }
 
 fn default_sidebar_w() -> f32 {
@@ -51,6 +64,11 @@ impl Default for Layout {
             col_kind: default_col_kind(),
             col_size: default_col_size(),
             dual_ratio: default_dual_ratio(),
+            win_x: 0,
+            win_y: 0,
+            win_w: 0,
+            win_h: 0,
+            win_maximized: false,
         }
     }
 }

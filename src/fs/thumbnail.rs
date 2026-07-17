@@ -346,8 +346,53 @@ pub fn extract(_path: &str, _size: u32) -> Option<(Vec<u8>, u32, u32)> {
 /// 提取 Windows 通用便携设备图标。
 #[cfg(windows)]
 fn extract_device_icon(size: u32) -> Option<(Vec<u8>, u32, u32)> {
+    use windows::Win32::UI::Shell::SIID_DEVICECELLPHONE;
+    extract_stock(SIID_DEVICECELLPHONE, size)
+}
+
+/// 常用 Shell 备用（Stock）图标：侧栏系统节点用。
+/// 回收站区分空/满两种状态（跟随系统实际状态变化）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum StockIcon {
+    RecyclerEmpty,
+    RecyclerFull,
+    Network,
+}
+
+/// 获取 Stock 图标像素（带类型缓存；空/满回收站分开缓存）。
+#[cfg(windows)]
+pub fn stock_icon_cached(which: StockIcon, size: u32) -> Option<Arc<IconPixels>> {
+    use windows::Win32::UI::Shell::{SIID_MYNETWORK, SIID_RECYCLER, SIID_RECYCLERFULL};
+
+    let (key, siid) = match which {
+        StockIcon::RecyclerEmpty => ("\u{0}<stock:recycler>", SIID_RECYCLER),
+        StockIcon::RecyclerFull => ("\u{0}<stock:recycler-full>", SIID_RECYCLERFULL),
+        StockIcon::Network => ("\u{0}<stock:network>", SIID_MYNETWORK),
+    };
+    if let Some(c) = type_cache().lock().ok()?.get(key).cloned() {
+        return Some(c);
+    }
+    let (pixels, w, h) = extract_stock(siid, size)?;
+    let arc = Arc::new(IconPixels { pixels, w, h });
+    if let Ok(mut c) = type_cache().lock() {
+        c.insert(key.to_string(), arc.clone());
+    }
+    Some(arc)
+}
+
+#[cfg(not(windows))]
+pub fn stock_icon_cached(_which: StockIcon, _size: u32) -> Option<Arc<IconPixels>> {
+    None
+}
+
+/// 通用 Stock 图标提取：SHGetStockIconInfo 取 HICON 后栅格化为 RGBA。
+#[cfg(windows)]
+fn extract_stock(
+    siid: windows::Win32::UI::Shell::SHSTOCKICONID,
+    size: u32,
+) -> Option<(Vec<u8>, u32, u32)> {
     use windows::Win32::UI::Shell::{
-        SHGetStockIconInfo, SHGSI_ICON, SHGSI_LARGEICON, SHSTOCKICONINFO, SIID_DEVICECELLPHONE,
+        SHGetStockIconInfo, SHGSI_ICON, SHGSI_LARGEICON, SHSTOCKICONINFO,
     };
 
     let mut info = SHSTOCKICONINFO {
@@ -355,23 +400,19 @@ fn extract_device_icon(size: u32) -> Option<(Vec<u8>, u32, u32)> {
         ..Default::default()
     };
     unsafe {
-        if let Err(e) = SHGetStockIconInfo(
-            SIID_DEVICECELLPHONE,
-            SHGSI_ICON | SHGSI_LARGEICON,
-            &mut info,
-        ) {
+        if let Err(e) = SHGetStockIconInfo(siid, SHGSI_ICON | SHGSI_LARGEICON, &mut info) {
             eprintln!("[icon-debug] SHGetStockIconInfo failed: {:?}", e);
             return None;
         }
     }
     if info.hIcon.is_invalid() {
-        eprintln!("[icon-debug] stock device hIcon invalid");
+        eprintln!("[icon-debug] stock hIcon invalid");
         return None;
     }
     match render_hicon(info.hIcon, size) {
         Some(r) => Some(r),
         None => {
-            eprintln!("[icon-debug] render_hicon(device) failed");
+            eprintln!("[icon-debug] render_hicon(stock) failed");
             None
         }
     }

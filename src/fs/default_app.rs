@@ -15,6 +15,12 @@
 const THIS_PC_KEY: &str =
     r"Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\opennewwindow";
 
+/// This PC 的 open 动词：部分入口（桌面「此电脑」双击、开始菜单固定的资源管理器项等）
+/// 走 open 而非 opennewwindow，一并接管确保「点击资源管理器」也打开本应用
+#[cfg(windows)]
+const THIS_PC_OPEN_KEY: &str =
+    r"Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\open";
+
 /// 接管的文件系统类：目录与驱动器根
 #[cfg(windows)]
 const FS_CLASSES: [&str; 2] = ["Directory", "Drive"];
@@ -64,6 +70,10 @@ fn enable_win() -> std::io::Result<()> {
     let (cmd, _) = hkcu.create_subkey(format!(r"{}\command", THIS_PC_KEY))?;
     cmd.set_value("", &format!("\"{}\"", exe))?;
     cmd.set_value("DelegateExecute", &"")?;
+    // 桌面「此电脑」双击 / 其它走 open 动词的资源管理器入口 → 本应用
+    let (cmd, _) = hkcu.create_subkey(format!(r"{}\command", THIS_PC_OPEN_KEY))?;
+    cmd.set_value("", &format!("\"{}\"", exe))?;
+    cmd.set_value("DelegateExecute", &"")?;
     Ok(())
 }
 
@@ -88,6 +98,7 @@ fn disable_win() -> std::io::Result<()> {
         del(&hkcu, format!(r"Software\Classes\{}\shell\open", cls))?;
     }
     del(&hkcu, THIS_PC_KEY.to_string())?;
+    del(&hkcu, THIS_PC_OPEN_KEY.to_string())?;
     Ok(())
 }
 

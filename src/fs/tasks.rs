@@ -714,8 +714,9 @@ impl<'a, F: Fn(Progress), G: Fn(ConflictQuery) -> ConflictReply> Runner<'a, F, G
     /// 逐条目解压 ZIP：enclosed_name 防路径穿越，文件级分块写入并上报进度。
     fn extract_zip(&mut self, archive: &Path, dst_dir: &Path) -> io::Result<bool> {
         let file = fs::File::open(archive)?;
-        let mut zip = zip::ZipArchive::new(file)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("无法读取归档：{}", e)))?;
+        let mut zip = zip::ZipArchive::new(file).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("无法读取归档：{}", e))
+        })?;
         fs::create_dir_all(dst_dir)?;
 
         for i in 0..zip.len() {
@@ -760,7 +761,9 @@ impl<'a, F: Fn(Progress), G: Fn(ConflictQuery) -> ConflictReply> Runner<'a, F, G
     fn extract_7z(&mut self, archive: &Path, dst_dir: &Path) -> io::Result<bool> {
         fs::create_dir_all(dst_dir)?;
         let mut sz = sevenz_rust::SevenZReader::open(archive, sevenz_rust::Password::empty())
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("无法读取归档：{}", e)))?;
+            .map_err(|e| {
+                io::Error::new(io::ErrorKind::InvalidData, format!("无法读取归档：{}", e))
+            })?;
         let mut cancelled = false;
         let result = sz.for_each_entries(|entry, reader| {
             self.ctrl.wait_if_paused();
@@ -985,13 +988,14 @@ impl<'a, F: Fn(Progress), G: Fn(ConflictQuery) -> ConflictReply> Runner<'a, F, G
             }
             match item {
                 PackItem::Dir(_, rel) => {
-                    zip.add_directory(format!("{}/", rel), options).map_err(to_io)?;
+                    zip.add_directory(format!("{}/", rel), options)
+                        .map_err(to_io)?;
                 }
                 PackItem::File(path, rel) => {
                     // 大文件（>4GiB）需在写入前声明以启用 zip64
-                    let large = fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
-                        >= 0xFFFF_FFFFu64;
-                    zip.start_file(&rel, options.large_file(large)).map_err(to_io)?;
+                    let large = fs::metadata(&path).map(|m| m.len()).unwrap_or(0) >= 0xFFFF_FFFFu64;
+                    zip.start_file(&rel, options.large_file(large))
+                        .map_err(to_io)?;
                     let name = name_of(&path);
                     let mut reader = fs::File::open(&path)?;
                     let mut buf = vec![0u8; 1024 * 1024];

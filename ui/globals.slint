@@ -104,6 +104,13 @@ export struct ShellNewEntry {
     has-thumb: bool,     // 是否已取得系统图标
 }
 
+// 已保存的网络位置（设置「云存储账号」页展示）
+export struct NetAccount {
+    name: string,    // 显示名
+    server: string,  // 服务器地址（\\server\share）
+    drive: string,   // 已挂载盘符（如 "Z:"，未挂载为空串）
+}
+
 export global AppState {
     in-out property <[FileEntry]> entries;
     in-out property <[Crumb]> crumbs;
@@ -125,6 +132,8 @@ export global AppState {
     in-out property <string> active-pane: "left";
     // 切换双面板开关
     callback toggle-dual();
+    // 交换左右面板（双面板模式下顶部工具栏按钮触发）
+    callback swap-panes();
     // 双面板比例拖拽结束时持久化
     callback save-dual-ratio(float);
     in-out property <string> omni-mode: "path";
@@ -215,6 +224,8 @@ export global AppState {
     in-out property <string> netloc-pass;
     callback add-network-location();
     callback remove-network-location(string);
+    // 已保存的网络位置列表（设置「云存储账号」页展示，Rust 启动/增删时推送）
+    in-out property <[NetAccount]> net-locations;
     callback toggle-details();
     callback copy-selected();
     callback cut-selected();
@@ -461,4 +472,12 @@ export global AppState {
     callback cancel-download();   // 取消正在进行的下载
     callback install-update();    // 启动已下载的安装程序并退出应用
     callback open-url(string);    // 用系统默认浏览器打开链接
+
+    // ════════ 文件名索引（设置「搜索与索引」：重建进度 / 深层搜索加速）════════
+    // 索引状态：0 空闲 / 1 重建中
+    in-out property <int> index-state: 0;
+    in-out property <float> index-progress: 0.0;       // 重建进度 0..1
+    in-out property <string> index-progress-text;      // 进度副标题：已索引条数 + 当前目录
+    in-out property <string> index-info;               // 空闲时的索引概况（条数/时间），空串显示默认描述
+    callback rebuild-index();     // 后台重建全部索引（进度回填）
 }
