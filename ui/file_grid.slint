@@ -1,0 +1,183 @@
+import { Theme } from "theme.slint";
+import { AppState, FileEntry } from "globals.slint";
+import { FileIcon } from "file_icon.slint";
+import { RenameEdit } from "rename_edit.slint";
+import { InputOverlay } from "input_overlay.slint";
+import { ListView } from "std-widgets.slint";
+
+// 网格视图（中/大图标），对照 design_ref 的 .file-grid
+// 外层加与列表一致的卡片边框，内部缩小留白
+// 使用 ListView 按“行”虚拟化：仅渲染可见行的卡片，大目录下保持流畅
+export component FileGrid inherits Rectangle {
+    callback request-context-menu(int, length, length);
+    // 是否绘制卡片外框：单面板视图为 true；双面板内嵌时为 false（由面板卡片提供外框）
+    in property <bool> framed: true;
+    border-radius: root.framed ? 12px : 0px;
+    border-width: root.framed ? 1px : 0px;
+    border-color: Theme.border;
+    background: root.framed ? Theme.surface.with-alpha(Theme.panel-alpha) : transparent;
+    clip: true;
+
+    // 宽度随图标缩放；高度至少容纳上下边距、图标、名称和信息行。
+    property <length> cell-w: 112px * AppState.icon-scale;
+    property <length> icon-box: 58px * AppState.icon-scale;
+    property <length> info-h: 16px;
+    property <length> cell-h: max(root.cell-w, 12px + root.icon-box + 30px + root.info-h + 10px);
+    property <length> pitch: root.cell-w + 10px;
+    // 每行高度（卡片 + 行间距 10px），用于 ListView 行高与命中换算
+    property <length> row-h: root.cell-h + 10px;
+    // 自适应列数（依据可视宽度）
+    property <int> cols: max(1, floor((list.visible-width - 24px) / root.pitch));
+    property <int> rows: ceil(AppState.entries.length / max(1, root.cols));
+
+    list := ListView {
+        width: 100%;
+        height: 100%;
+        // 整数即为合法 model：迭代 0..rows，ListView 仅实例化可见行
+        for r in root.rows: Rectangle {
+            height: root.row-h;
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: r == 0 ? 12px : 0px;
+                spacing: 10px;
+                alignment: start;
+
+                for col in root.cols: cell := Rectangle {
+                    // 扁平索引
+                    property <int> idx: r * root.cols + col;
+                    property <bool> valid: self.idx < AppState.entries.length;
+                    width: root.cell-w;
+                    height: root.cell-h;
+
+                    if cell.valid: card := Rectangle {
+                        property <FileEntry> entry: AppState.entries[cell.idx];
+                        border-radius: Theme.radius-card;
+                        border-width: 1px;
+                        border-color: card.entry.selected ? #0078d473 : transparent;
+                        background: card.entry.selected
+                            ? #0078d426
+                            : (ov.hover-idx == cell.idx ? #0078d412 : transparent);
+                        // 裁剪超出选中框的内容，避免长文件名溢出
+                        clip: true;
+
+                        VerticalLayout {
+                            padding-top: 12px;
+                            padding-bottom: 10px;
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 0px;
+                            alignment: start;
+                            HorizontalLayout {
+                                alignment: center;
+                                FileIcon {
+                                    icon-class: card.entry.icon-class;
+                                    label: card.entry.icon-label;
+                                    thumb: card.entry.thumb;
+                                    has-thumb: card.entry.has-thumb;
+                                    box: root.icon-box;
+                                }
+                            }
+                            if AppState.editing-index != cell.idx: Text {
+                                text: card.entry.name;
+                                font-size: Theme.fs-small;
+                                color: Theme.text;
+                                horizontal-alignment: center;
+                                wrap: char-wrap;
+                                overflow: elide;
+                                height: 30px;
+                            }
+                            if AppState.editing-index == cell.idx: RenameEdit {
+                                text: card.entry.name;
+                                font-size: Theme.fs-small;
+                                // 按 Escape 退出重命名
+                                cancel => { AppState.editing-index = -1; }
+                                commit(t) => {
+                                    AppState.rename-entry(cell.idx, t);
+                                    AppState.editing-index = -1;
+                                }
+                            }
+                            Text {
+                                // 驱动器显示总容量、便携设备显示类型；其余目录显示修改日期、文件显示大小
+                                text: card.entry.icon-class == "drive" ? card.entry.size
+                                    : card.entry.icon-class == "device" ? card.entry.kind
+                                    : card.entry.is-dir ? card.entry.modified : card.entry.size;
+                                font-size: Theme.fs-tiny;
+                                color: Theme.subtle;
+                                height: root.info-h;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+
+                        // 标签彩色点：叠在图标左下角（重要红 / 待归档橙 / 已完成绿，可并列多个）
+                        Rectangle {
+                            width: 32px;
+                            height: 10px;
+                            x: parent.width / 2 - root.icon-box / 2;
+                            y: 12px + root.icon-box - 9px;
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 3px;
+                                if card.entry.tag-important: Rectangle {
+                                    width: 9px; height: 9px; border-radius: 4.5px;
+                                    background: #d13438; border-width: 2px; border-color: white;
+                                }
+                                if card.entry.tag-archive: Rectangle {
+                                    width: 9px; height: 9px; border-radius: 4.5px;
+                                    background: #ff8c00; border-width: 2px; border-color: white;
+                                }
+                                if card.entry.tag-done: Rectangle {
+                                    width: 9px; height: 9px; border-radius: 4.5px;
+                                    background: #107c10; border-width: 2px; border-color: white;
+                                }
+                            }
+                        }
+
+                        // Git 状态徽章：图标右下角（M 已修改橙 / ? 未追踪灰 / A 已暂存绿 / ! 冲突红）
+                        if card.entry.git-status != "": Rectangle {
+                            width: 18px;
+                            height: 18px;
+                            x: parent.width / 2 + root.icon-box / 2 - 15px;
+                            y: 12px + root.icon-box - 15px;
+                            border-radius: 5px;
+                            border-width: 2px;
+                            border-color: white;
+                            background: card.entry.git-status == "?" ? #8a99aa
+                                : card.entry.git-status == "!" ? #d13438
+                                : card.entry.git-status == "A" ? #107c10
+                                : #ff8c00;
+                            Text {
+                                text: card.entry.git-status;
+                                color: white;
+                                font-size: 11px;
+                                font-weight: 800;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // 统一输入层：网格模式（二维命中），覆盖在 ListView 之上集中处理指针交互
+    ov := InputOverlay {
+        width: 100%;
+        height: 100%;
+        pane: "left";
+        mode: "grid";
+        count: AppState.entries.length;
+        cols: root.cols;
+        row-h: root.row-h;
+        cell-w: root.cell-w;
+        pitch-x: root.pitch;
+        top-pad: 12px;
+        left-pad: 12px;
+        vp-y <=> list.viewport-y;
+        vp-h: list.viewport-height;
+        vis-h: list.visible-height;
+        request-context-menu(i, mx, my) => { root.request-context-menu(i, mx, my); }
+    }
+}

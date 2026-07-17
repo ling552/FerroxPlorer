@@ -1,0 +1,217 @@
+// 命令面板：Ctrl+P 快速导航、切换视图、执行操作
+import { Theme } from "theme.slint";
+import { AppState, Command } from "globals.slint";
+import { LineEdit } from "std-widgets.slint";
+
+export component CommandPalette inherits Rectangle {
+    in-out property <bool> open: false;
+    in-out property <[Command]> commands;
+    in-out property <int> selected-index: 0;
+    callback execute-command(string);  // action -> 执行
+    callback query-changed(string);    // 搜索框输入变化 -> Rust 过滤
+
+    width: 100%;
+    height: 100%;
+
+    // 半透明遮罩
+    if open: backdrop := Rectangle {
+        width: 100%;
+        height: 100%;
+        background: rgba(18, 34, 52, 0.3);
+
+        TouchArea {
+            clicked => { root.open = false; }
+        }
+
+        // 命令面板主体
+        panel := Rectangle {
+            x: (parent.width - 580px) / 2;
+            y: 118px;
+            width: 580px;
+            max-height: 438px;
+            border-radius: 16px;
+            background: rgba(33, 42, 56, 0.92);
+            border-width: 1px;
+            border-color: rgba(255, 255, 255, 0.16);
+            drop-shadow-blur: 80px;
+            drop-shadow-color: rgba(0, 0, 0, 0.34);
+
+            VerticalLayout {
+                spacing: 0px;
+
+                // 搜索输入框
+                search-bar := Rectangle {
+                    height: 58px;
+                    HorizontalLayout {
+                        padding-left: 18px;
+                        padding-right: 18px;
+                        spacing: 12px;
+
+                        Text {
+                            text: "\u{E721}";  // Search
+                            font-family: "Segoe MDL2 Assets";
+                            font-size: 18px;
+                            color: white;
+                            vertical-alignment: center;
+                        }
+
+                        search-input := LineEdit {
+                            placeholder-text: "输入命令或路径...";
+                            font-size: 16px;
+                            horizontal-stretch: 1;
+                            edited(t) => { root.query-changed(t); }
+                            // 回车执行当前选中项（默认首个匹配；鼠标悬停/键盘上下可改选中项）
+                            accepted => {
+                                if (root.commands.length > 0) {
+                                    root.execute-command(root.commands[min(root.selected-index, root.commands.length - 1)].action);
+                                    root.open = false;
+                                }
+                            }
+                            // 键盘上下箭头导航选中项 + Esc 关闭。
+                            // LineEdit 支持 key-pressed（见 rename_edit.slint / main.slint key-scope 先例）。
+                            key-pressed(ev) => {
+                                if (ev.text == Key.UpArrow) {
+                                    if (root.commands.length > 0) {
+                                        root.selected-index = max(0, root.selected-index - 1);
+                                        // 选中项顶部滚入视口：viewport-y 为内容相对视口偏移，负值=向下滚动。
+                                        // 项顶在内容坐标 10px(padding) + i*42px，可见要求 viewport-y >= -(该项顶)。
+                                        command-scroll.viewport-y = max(command-scroll.viewport-y, -(10px + root.selected-index * 42px));
+                                    }
+                                    return accept;
+                                }
+                                if (ev.text == Key.DownArrow) {
+                                    if (root.commands.length > 0) {
+                                        root.selected-index = min(root.commands.length - 1, root.selected-index + 1);
+                                        // 选中项底部滚入视口：可见要求 viewport-y <= height - (项底)。
+                                        command-scroll.viewport-y = min(command-scroll.viewport-y, command-scroll.height - (10px + (root.selected-index + 1) * 42px));
+                                    }
+                                    return accept;
+                                }
+                                if (ev.text == Key.Escape) {
+                                    root.open = false;
+                                    return accept;
+                                }
+                                return reject;
+                            }
+                        }
+
+                        Rectangle {
+                            width: 56px;
+                            height: 24px;
+                            border-radius: 6px;
+                            background: rgba(255, 255, 255, 0.12);
+                            border-width: 1px;
+                            border-color: rgba(255, 255, 255, 0.12);
+
+                            Text {
+                                text: "Esc";
+                                font-size: 11px;
+                                color: rgba(255, 255, 255, 0.72);
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    Rectangle {
+                        y: parent.height - 1px;
+                        height: 1px;
+                        background: rgba(255, 255, 255, 0.12);
+                    }
+                }
+
+                // 命令列表
+                command-scroll := Flickable {
+                    vertical-stretch: 1;
+                    viewport-height: max(content-layout.preferred-height, self.height);
+
+                    content-layout := VerticalLayout {
+                        padding: 10px;
+                        spacing: 0px;
+
+                        // 无匹配命令时的空态提示
+                        if root.commands.length == 0: Rectangle {
+                            height: 42px;
+                            Text {
+                                text: "未找到匹配的命令";
+                                font-size: 13px;
+                                color: rgba(255, 255, 255, 0.5);
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        for cmd[i] in root.commands: cmd-row := Rectangle {
+                            height: 42px;
+                            border-radius: 10px;
+                            background: i == root.selected-index ? Theme.primary : transparent;
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 10px;
+
+                                Text {
+                                    text: cmd.icon;
+                                    font-family: "Segoe MDL2 Assets";
+                                    font-size: 16px;
+                                    color: white;
+                                    vertical-alignment: center;
+                                    width: 26px;
+                                }
+
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    alignment: center;
+
+                                    Text {
+                                        text: cmd.title;
+                                        font-size: 14px;
+                                        color: white;
+                                        font-weight: 700;
+                                    }
+
+                                    if cmd.description != "": Text {
+                                        text: cmd.description;
+                                        font-size: 12px;
+                                        color: rgba(255, 255, 255, 0.58);
+                                    }
+                                }
+
+                                if cmd.shortcut != "": Rectangle {
+                                    width: 86px;
+                                    HorizontalLayout {
+                                        alignment: end;
+                                        Text {
+                                            text: cmd.shortcut;
+                                            font-size: 11px;
+                                            color: rgba(255, 255, 255, 0.58);
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            cmd-touch := TouchArea {
+                                clicked => {
+                                    root.execute-command(cmd.action);
+                                    root.open = false;
+                                }
+                                pointer-event(e) => {
+                                    if e.kind == PointerEventKind.move {
+                                        root.selected-index = i;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 阻止点击穿透到背景
+            TouchArea {
+                width: 100%;
+                height: 100%;
+            }
+        }
+    }
+}

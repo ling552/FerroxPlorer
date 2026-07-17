@@ -1,0 +1,52 @@
+//! 重命名输入框：延迟聚焦的 LineEdit 封装
+//!
+//! 背景：直接在 LineEdit 的 init 回调里调用 self.focus() 会在条目树构建阶段
+//! 触发 accesskit 无障碍适配器的重入借用，导致
+//! "RefCell already borrowed" panic（winitwindowadapter.rs:1584）。
+//! 解决：用 1ms 的 Timer 把 focus()/select-all() 推迟到本帧构建完成之后再执行。
+//!
+//! 由于 LineEdit 不允许有子元素（无 @children），这里用 Rectangle 包裹
+//! LineEdit 与 Timer，对外暴露 text/font-size 与 cancel/commit。
+
+import { LineEdit } from "std-widgets.slint";
+
+export component RenameEdit inherits Rectangle {
+    in property <string> text;
+    in property <length> font-size: 13px;
+    // 取消编辑（按 Escape 时回调，由父组件清理 editing-index）
+    callback cancel();
+    // 提交新名称
+    callback commit(string);
+
+    // 计时器装填标记：true 时 Timer 运行，触发一次后置 false
+    property <bool> armed: true;
+
+    // 高度跟随内部输入框首选高度，使其在布局中表现与原 LineEdit 一致
+    height: edit.preferred-height;
+
+    edit := LineEdit {
+        width: 100%;
+        text: root.text;
+        font-size: root.font-size;
+        key-pressed(ev) => {
+            if (ev.text == Key.Escape) {
+                root.cancel();
+                return accept;
+            }
+            return reject;
+        }
+        accepted(t) => {
+            root.commit(t);
+        }
+    }
+
+    Timer {
+        interval: 1ms;
+        running: root.armed;
+        triggered => {
+            root.armed = false;
+            edit.focus();
+            edit.select-all();
+        }
+    }
+}

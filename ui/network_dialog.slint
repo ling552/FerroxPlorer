@@ -1,0 +1,74 @@
+// 添加网络位置对话框（SMB 挂载）
+import { Theme } from "theme.slint";
+import { AppState } from "globals.slint";
+import { LineEdit } from "std-widgets.slint";
+
+export component NetworkLocationDialog inherits Rectangle {
+    visible: AppState.netloc-dialog-open;
+    if AppState.netloc-dialog-open: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #12223433;
+        TouchArea { clicked => { AppState.netloc-dialog-open = false; } }
+
+        Rectangle {
+            width: 420px;
+            height: 350px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            border-radius: Theme.radius-dialog;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: #ffffffcc;
+            drop-shadow-blur: 40px;
+            drop-shadow-color: #1c304a4d;
+            clip: true;
+            TouchArea {}
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+
+                Text {
+                    text: "添加网络位置 (SMB)";
+                    font-size: 16px;
+                    font-weight: 700;
+                    color: Theme.text;
+                }
+
+                VerticalLayout {
+                    spacing: 6px;
+                    Text { text: "显示名称"; font-size: 12px; color: Theme.muted; }
+                    LineEdit { text <=> AppState.netloc-name; placeholder-text: "如: 共享文档 (可空)"; }
+                    Text { text: "服务器地址"; font-size: 12px; color: Theme.muted; }
+                    LineEdit { text <=> AppState.netloc-server; placeholder-text: "\\\\server\\share"; }
+                    Text { text: "用户名 (可空)"; font-size: 12px; color: Theme.muted; }
+                    LineEdit { text <=> AppState.netloc-user; }
+                    Text { text: "密码 (可空)"; font-size: 12px; color: Theme.muted; }
+                    LineEdit { text <=> AppState.netloc-pass; }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+
+                    Rectangle {
+                        width: 80px; height: 34px; border-radius: 6px;
+                        background: cancel-touch.has-hover ? Theme.primary-hover : Theme.surface;
+                        border-width: 1px; border-color: Theme.border;
+                        Text { text: "取消"; color: Theme.text; horizontal-alignment: center; vertical-alignment: center; }
+                        cancel-touch := TouchArea { clicked => { AppState.netloc-dialog-open = false; } }
+                    }
+                    Rectangle {
+                        width: 80px; height: 34px; border-radius: 6px;
+                        background: ok-touch.has-hover ? Theme.primary-hover : Theme.primary;
+                        Text { text: "连接"; color: white; horizontal-alignment: center; vertical-alignment: center; }
+                        ok-touch := TouchArea { clicked => { AppState.add-network-location(); } }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,165 @@
+// 文件操作进度卡片：显示复制、移动、删除等操作的实时进度
+import { Theme } from "theme.slint";
+import { Button } from "std-widgets.slint";
+
+export component ProgressCard inherits Rectangle {
+    in-out property <bool> show-progress: false;    // 显示/隐藏进度卡片
+    in-out property <string> operation: "复制文件";  // 操作类型
+    in-out property <string> current-file: "";      // 当前处理的文件
+    in-out property <string> target-path: "";       // 目标路径
+    in-out property <int> completed: 0;             // 已完成数量
+    in-out property <int> total: 0;                 // 总数量
+    in-out property <float> progress: 0.0;          // 进度 0.0-1.0
+    in-out property <string> speed: "0 MB/s";       // 速度
+    in-out property <string> eta: "计算中...";      // 预计剩余时间
+    in-out property <bool> paused: false;           // 是否处于暂停状态
+
+    callback pause-clicked();
+    callback cancel-clicked();
+
+    width: 100%;
+    height: 100%;
+
+    if show-progress: Rectangle {
+        width: 100%;
+        height: 100%;
+
+        // 定位到右下角
+        card := Rectangle {
+            x: parent.width - 310px - 16px;
+            y: parent.height - 180px - 48px;
+            width: 310px;
+            height: 180px;
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.95);
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: 58px;
+            drop-shadow-color: rgba(33, 55, 80, 0.22);
+
+            VerticalLayout {
+                padding: 14px;
+                spacing: 12px;
+
+                // 标题栏
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: root.operation;
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: Math.round(root.progress * 100) + "%";
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // 当前文件
+                Text {
+                    text: "当前: " + root.current-file;
+                    font-size: 12px;
+                    color: Theme.muted;
+                    overflow: elide;
+                }
+
+                // 目标路径（动词随任务类型：复制/移动/解压/压缩）
+                Text {
+                    text: "正在" + (root.operation == "移动文件" ? "移动"
+                        : root.operation == "解压文件" ? "解压"
+                        : root.operation == "压缩文件" ? "压缩"
+                        : "复制") + "到 " + root.target-path;
+                    font-size: 12px;
+                    color: Theme.muted;
+                    overflow: elide;
+                }
+
+                // 进度条
+                Rectangle {
+                    height: 9px;
+                    border-radius: 999px;
+                    background: #dfeaf4;
+
+                    Rectangle {
+                        width: parent.width * root.progress;
+                        height: 100%;
+                        border-radius: parent.border-radius;
+                        background: @linear-gradient(90deg, Theme.primary, #35b8ff);
+                    }
+                }
+
+                // 统计信息
+                VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        // total < 0 表示总数未知（tar 解压无法预知条目数）
+                        text: root.total < 0
+                            ? "已完成 " + root.completed + " 个文件"
+                            : "已完成 " + root.completed + " / " + root.total + " 个文件";
+                        font-size: 12px;
+                        color: Theme.muted;
+                    }
+                    Text {
+                        text: "速度 " + root.speed + " · 预计剩余 " + root.eta;
+                        font-size: 12px;
+                        color: Theme.muted;
+                    }
+                }
+
+                // 按钮组
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+
+                    pause-btn := Rectangle {
+                        width: 64px;
+                        height: 34px;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        background: pause-touch.has-hover ? rgba(0, 0, 0, 0.04) : white;
+
+                        Text {
+                            text: root.paused ? "继续" : "暂停";
+                            font-size: 13px;
+                            color: #284057;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        pause-touch := TouchArea {
+                            clicked => { root.pause-clicked(); }
+                        }
+                    }
+
+                    cancel-btn := Rectangle {
+                        width: 64px;
+                        height: 34px;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        background: cancel-touch.has-hover ? rgba(209, 52, 56, 0.08) : white;
+
+                        Text {
+                            text: "取消";
+                            font-size: 13px;
+                            color: Theme.danger;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        cancel-touch := TouchArea {
+                            clicked => { root.cancel-clicked(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,17 @@
+# Rust 构建产物
+/target
+
+# 本地运行时数据(非项目代码)
+/data
+
+# 构建生成的图标(build.rs 从 icon.png 生成)
+/icon.ico
+
+# 安装程序输出
+/installer/Output
+
+# IDE / 工具缓存
+.idea/
+.vscode/
+.vs/
+.kunsdd/

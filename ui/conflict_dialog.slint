@@ -1,0 +1,197 @@
+// 同名冲突解决对话框：复制 / 移动时目标目录已存在同名项，
+// 询问用户覆盖 / 重命名 / 跳过，并可勾选「对后续所有冲突执行相同操作」。
+import { Theme } from "theme.slint";
+
+// 对话框内的操作按钮（自适应文字宽度）
+component DlgButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    callback clicked;
+
+    height: 36px;
+    border-radius: 8px;
+    border-width: primary ? 0px : 1px;
+    border-color: Theme.border;
+    background: primary
+        ? (touch.has-hover ? #1a86e0 : Theme.primary)
+        : (touch.has-hover ? rgba(0, 0, 0, 0.04) : white);
+
+    HorizontalLayout {
+        padding-left: 18px;
+        padding-right: 18px;
+        Text {
+            text: label;
+            color: primary ? white : #284057;
+            font-size: 13px;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component ConflictDialog inherits Rectangle {
+    in-out property <bool> open: false;
+    in property <string> name;
+    in property <string> operation;
+    in property <string> src-info;
+    in property <string> dst-info;
+    in property <bool> is-dir: false;
+    in-out property <bool> apply-all: false;
+
+    // decision: "overwrite" / "rename" / "skip"；第二参为是否应用到后续全部
+    callback choose(string, bool);
+
+    width: 100%;
+    height: 100%;
+
+    if open: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: rgba(18, 34, 52, 0.28);
+
+        // 吞掉背后区域的鼠标交互（模态）
+        TouchArea {}
+
+        Rectangle {
+            width: 480px;
+            height: 312px;
+            border-radius: 16px;
+            background: white;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: 90px;
+            drop-shadow-color: rgba(28, 48, 74, 0.30);
+
+            VerticalLayout {
+                padding: 22px;
+                spacing: 14px;
+
+                // 标题
+                Text {
+                    text: root.is-dir ? "目标位置已存在同名文件夹" : "目标位置已存在同名文件";
+                    font-size: 17px;
+                    font-weight: 700;
+                    color: Theme.text;
+                }
+
+                // 冲突项名称
+                Text {
+                    text: root.name;
+                    font-size: 14px;
+                    font-weight: 700;
+                    color: Theme.primary;
+                    overflow: elide;
+                }
+
+                // 源 / 目标信息对比
+                Rectangle {
+                    height: 86px;
+                    border-radius: 10px;
+                    background: rgba(0, 120, 212, 0.06);
+                    border-width: 1px;
+                    border-color: Theme.border;
+
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 10px;
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "新项目";
+                                width: 64px;
+                                color: Theme.muted;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.src-info;
+                                color: Theme.text;
+                                font-size: 13px;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "已存在";
+                                width: 64px;
+                                color: Theme.muted;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.dst-info;
+                                color: Theme.text;
+                                font-size: 13px;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // 「对后续所有冲突执行相同操作」复选框
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    Rectangle {
+                        width: 20px;
+                        height: 20px;
+                        border-radius: 5px;
+                        border-width: 1px;
+                        border-color: root.apply-all ? Theme.primary : Theme.border;
+                        background: root.apply-all ? Theme.primary : rgba(0, 0, 0, 0);
+
+                        Text {
+                            text: "\u{E73E}";
+                            font-family: "Segoe MDL2 Assets";
+                            color: white;
+                            font-size: 11px;
+                            visible: root.apply-all;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            clicked => { root.apply-all = !root.apply-all; }
+                        }
+                    }
+                    Text {
+                        text: "对后续所有冲突执行相同操作";
+                        color: Theme.muted;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // 操作按钮：覆盖（主） / 重命名 / 跳过
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+
+                    DlgButton {
+                        label: "覆盖";
+                        primary: true;
+                        clicked => { root.choose("overwrite", root.apply-all); }
+                    }
+                    DlgButton {
+                        label: "保留两者";
+                        clicked => { root.choose("rename", root.apply-all); }
+                    }
+                    DlgButton {
+                        label: "跳过";
+                        clicked => { root.choose("skip", root.apply-all); }
+                    }
+                }
+            }
+        }
+    }
+}

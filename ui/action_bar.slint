@@ -1,0 +1,470 @@
+import { Theme } from "theme.slint";
+import { AppState, ShellNewEntry } from "globals.slint";
+import { FileIcon } from "file_icon.slint";
+
+// 单个操作按钮：MDL2 图标 + 文字，悬停高亮。
+// enabled 为假时整体置灰且不响应点击（如无选中时的复制/删除、剪贴板为空时的粘贴）。
+component ActionBtn inherits Rectangle {
+    in property <string> glyph;
+    in property <string> label;
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    callback clicked;
+    height: 32px;
+    border-radius: Theme.radius-btn;
+    opacity: root.enabled ? 1.0 : 0.35;
+    background: touch.has-hover && root.enabled
+        ? (danger ? #d1343814 : Theme.primary-soft)
+        : transparent;
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 11px;
+        spacing: 6px;
+        Text {
+            text: glyph;
+            font-family: "Segoe MDL2 Assets";
+            font-size: 14px;
+            color: danger ? Theme.danger : (touch.has-hover && root.enabled ? Theme.primary : Theme.muted);
+            vertical-alignment: center;
+        }
+        Text {
+            text: label;
+            font-size: Theme.fs-small;
+            color: danger ? Theme.danger : Theme.text;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+    }
+}
+
+component Divider inherits Rectangle {
+    width: 1px;
+    height: 22px;
+    background: Theme.border;
+}
+
+// "新增"下拉菜单的单行：图标 + 名称，悬停高亮
+// 图标跟随"图标来源"设置：系统图标模式下 has-thumb 为真直接渲染系统位图，
+// 否则按 icon-class 渲染内置矢量图（绝不出现空白/白板图标）
+component NewMenuRow inherits Rectangle {
+    in property <string> icon-class;
+    in property <string> icon-label;
+    in property <image> thumb;
+    in property <bool> has-thumb;
+    in property <string> label;
+    callback clicked;
+    height: Theme.row-h;
+    border-radius: Theme.radius-btn;
+    background: touch.has-hover ? Theme.primary-soft : transparent;
+    HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        spacing: 8px;
+        VerticalLayout {
+            alignment: center;
+            FileIcon {
+                icon-class: root.icon-class;
+                label: root.icon-label;
+                thumb: root.thumb;
+                has-thumb: root.has-thumb;
+                compact: !root.has-thumb;
+                box: 20px;
+                radius: 4px;
+            }
+        }
+        Text {
+            text: label;
+            font-size: Theme.fs-body;
+            color: touch.has-hover ? Theme.primary : Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// "标记"下拉的单行：对勾图标 + 文字，悬停高亮。on 为真时左侧显示对勾。
+component TagMenuRow inherits Rectangle {
+    in property <bool> on;
+    in property <string> label;
+    callback clicked;
+    height: Theme.row-h;
+    border-radius: Theme.radius-btn;
+    background: touch.has-hover ? Theme.primary-soft : transparent;
+    HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        spacing: 8px;
+        Text {
+            // 已标记显示对勾(E73E)，未标记留空占位保持对齐
+            text: root.on ? "\u{E73E}" : "";
+            width: 18px;
+            font-family: "Segoe MDL2 Assets";
+            font-size: 13px;
+            color: touch.has-hover ? Theme.primary : Theme.primary;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.label;
+            font-size: Theme.fs-body;
+            color: touch.has-hover ? Theme.primary : Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// "标记"按钮：点击展开「重要 / 待归档 / 已完成」三项，对当前选中项统一切换标签
+component TagButton inherits Rectangle {
+    in property <bool> enabled: true;
+    height: 32px;
+    width: lay.preferred-width;
+    border-radius: Theme.radius-btn;
+    opacity: root.enabled ? 1.0 : 0.35;
+    background: touch.has-hover && root.enabled ? Theme.primary-soft : transparent;
+    lay := HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 9px;
+        spacing: 6px;
+        Text {
+            text: "\u{E1CB}";   // 标记 / 旗标
+            font-family: "Segoe MDL2 Assets";
+            font-size: 14px;
+            color: touch.has-hover && root.enabled ? Theme.primary : Theme.muted;
+            vertical-alignment: center;
+        }
+        Text {
+            text: "标记";
+            font-size: Theme.fs-small;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+        Text {
+            text: "\u{E70D}";   // 向下箭头
+            font-family: "Segoe MDL2 Assets";
+            font-size: 10px;
+            color: Theme.muted;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { popup.show(); }
+    }
+    // 下拉菜单：左对齐按钮、向下展开
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + 4px;
+        width: 188px;
+        height: menu-col.preferred-height;
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        Rectangle {
+            border-radius: 12px;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: 30px;
+            drop-shadow-color: #21375038;
+            drop-shadow-offset-y: 12px;
+            menu-col := VerticalLayout {
+                padding: 6px;
+                spacing: 0px;
+                TagMenuRow {
+                    on: AppState.sel-tag-important;
+                    label: "标记为 · 重要";
+                    clicked => { AppState.tag-selected("important"); popup.close(); }
+                }
+                TagMenuRow {
+                    on: AppState.sel-tag-archive;
+                    label: "标记为 · 待归档";
+                    clicked => { AppState.tag-selected("archive"); popup.close(); }
+                }
+                TagMenuRow {
+                    on: AppState.sel-tag-done;
+                    label: "标记为 · 已完成";
+                    clicked => { AppState.tag-selected("done"); popup.close(); }
+                }
+            }
+        }
+    }
+}
+
+// "压缩"按钮：点击展开格式选择（ZIP / 7z / TAR / TAR.GZ），压缩选中项到当前目录
+component CompressButton inherits Rectangle {
+    in property <bool> enabled: true;
+    height: 32px;
+    width: lay.preferred-width;
+    border-radius: Theme.radius-btn;
+    opacity: root.enabled ? 1.0 : 0.35;
+    background: touch.has-hover && root.enabled ? Theme.primary-soft : transparent;
+    lay := HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 9px;
+        spacing: 6px;
+        Text {
+            text: "\u{E8B5}";   // 压缩包
+            font-family: "Segoe MDL2 Assets";
+            font-size: 14px;
+            color: touch.has-hover && root.enabled ? Theme.primary : Theme.muted;
+            vertical-alignment: center;
+        }
+        Text {
+            text: "压缩";
+            font-size: Theme.fs-small;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+        Text {
+            text: "\u{E70D}";   // 向下箭头
+            font-family: "Segoe MDL2 Assets";
+            font-size: 10px;
+            color: Theme.muted;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { popup.show(); }
+    }
+    // 下拉菜单：左对齐按钮、向下展开
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + 4px;
+        width: 188px;
+        height: menu-col.preferred-height;
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        Rectangle {
+            border-radius: 12px;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: 30px;
+            drop-shadow-color: #21375038;
+            drop-shadow-offset-y: 12px;
+            menu-col := VerticalLayout {
+                padding: 6px;
+                spacing: 0px;
+                TagMenuRow {
+                    label: "压缩为 ZIP";
+                    clicked => { AppState.compress-selected-fmt(-1, "zip"); popup.close(); }
+                }
+                TagMenuRow {
+                    label: "压缩为 7z";
+                    clicked => { AppState.compress-selected-fmt(-1, "7z"); popup.close(); }
+                }
+                TagMenuRow {
+                    label: "压缩为 TAR";
+                    clicked => { AppState.compress-selected-fmt(-1, "tar"); popup.close(); }
+                }
+                TagMenuRow {
+                    label: "压缩为 TAR.GZ";
+                    clicked => { AppState.compress-selected-fmt(-1, "targz"); popup.close(); }
+                }
+            }
+        }
+    }
+}
+
+// "新增"按钮：点击展开系统注册的"新建"类型下拉菜单（文件夹 / 各类文件模板）
+component NewButton inherits Rectangle {
+    height: 32px;
+    width: lay.preferred-width;
+    border-radius: Theme.radius-btn;
+    background: touch.has-hover ? Theme.primary-soft : transparent;
+    lay := HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 9px;
+        spacing: 6px;
+        Text {
+            text: "\u{E710}";   // 加号
+            font-family: "Segoe MDL2 Assets";
+            font-size: 14px;
+            color: touch.has-hover ? Theme.primary : Theme.muted;
+            vertical-alignment: center;
+        }
+        Text {
+            text: "新增";
+            font-size: Theme.fs-small;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+        Text {
+            text: "\u{E70D}";   // 向下箭头
+            font-family: "Segoe MDL2 Assets";
+            font-size: 10px;
+            color: Theme.muted;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { popup.show(); }
+    }
+    // 下拉菜单：右对齐按钮、向下展开，内容超高时可滚动
+    popup := PopupWindow {
+        x: root.width - 248px;
+        y: root.height + 4px;
+        width: 248px;
+        height: min(menu-col.preferred-height, 460px);
+        close-policy: PopupClosePolicy.close-on-click-outside;
+        Rectangle {
+            border-radius: 12px;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: 30px;
+            drop-shadow-color: #21375038;
+            drop-shadow-offset-y: 12px;
+            clip: true;
+            Flickable {
+                viewport-height: menu-col.preferred-height;
+                menu-col := VerticalLayout {
+                    padding: 6px;
+                    spacing: 0px;
+                    for item[i] in AppState.new-menu-items: NewMenuRow {
+                        icon-class: item.icon-class;
+                        icon-label: item.icon-label;
+                        thumb: item.thumb;
+                        has-thumb: item.has-thumb;
+                        label: item.name;
+                        clicked => {
+                            AppState.create-new-item(i);
+                            popup.close();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// 选中项 / 回收站 快捷操作栏
+export component ActionBar inherits Rectangle {
+    height: Theme.actionbar-h;
+    background: Theme.shell.with-alpha(Theme.panel-alpha);
+    property <bool> in-recycle: AppState.current-vpath == "recycle://";
+    Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 4px;
+
+        if root.in-recycle: HorizontalLayout {
+            horizontal-stretch: 0;
+            spacing: 4px;
+            ActionBtn {
+                glyph: "\u{E7A7}"; label: "恢复选中";
+                enabled: AppState.sel-count > 0;
+                clicked => { AppState.restore-selected(); }
+            }
+            ActionBtn {
+                glyph: "\u{E8EB}"; label: "恢复全部";
+                enabled: AppState.entries.length > 0;
+                clicked => { AppState.restore-all(); }
+            }
+            Divider {}
+            ActionBtn {
+                glyph: "\u{E74D}"; label: "彻底删除选中"; danger: true;
+                enabled: AppState.sel-count > 0;
+                clicked => { AppState.delete-permanent-selected(); }
+            }
+            ActionBtn {
+                glyph: "\u{E74D}"; label: "彻底删除全部"; danger: true;
+                enabled: AppState.entries.length > 0;
+                clicked => { AppState.delete-permanent-all(); }
+            }
+        }
+
+        if !root.in-recycle: HorizontalLayout {
+            horizontal-stretch: 0;
+            spacing: 4px;
+            ActionBtn {
+                glyph: "\u{E8C8}"; label: "复制";
+                enabled: AppState.sel-count > 0;
+                clicked => { AppState.copy-selected(); }
+            }
+            ActionBtn {
+                glyph: "\u{E8C6}"; label: "剪切";
+                enabled: AppState.sel-count > 0;
+                clicked => { AppState.cut-selected(); }
+            }
+            ActionBtn {
+                glyph: "\u{E77F}"; label: "粘贴";
+                enabled: AppState.can-paste;
+                clicked => { AppState.paste-here(); }
+            }
+            Divider {}
+            ActionBtn {
+                glyph: "\u{E8AC}"; label: "重命名";
+                enabled: AppState.sel-count == 1;
+                clicked => { AppState.request-rename(); }
+            }
+            // 标记下拉：在「重命名」后、「删除」前
+            TagButton { enabled: AppState.sel-count > 0; }
+            ActionBtn {
+                glyph: "\u{E74D}"; label: "删除"; danger: true;
+                enabled: AppState.sel-count > 0;
+                clicked => { AppState.delete-selected(); }
+            }
+            Divider {}
+            // 压缩下拉：选择输出格式（ZIP / 7z / TAR / TAR.GZ），后台任务执行
+            CompressButton { enabled: AppState.sel-count > 0; }
+            // 解压：仅选中单个 ZIP 归档时显示
+            if AppState.sel-is-archive: ActionBtn {
+                glyph: "\u{E896}"; label: "解压";
+                clicked => { AppState.extract-selected(); }
+            }
+        }
+
+        // 弹性空白：把"新增"按钮推到菜单栏右侧
+        Rectangle { horizontal-stretch: 1; }
+
+        // Git 分支芯片：仅当前目录属于 Git 仓库时显示（对照 design 的「Git: main」）
+        if AppState.git-branch != "": Rectangle {
+            horizontal-stretch: 0;
+            height: 30px;
+            border-radius: 999px;
+            background: Theme.primary-soft;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 12px;
+                spacing: 6px;
+                Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: Theme.primary;
+                    y: (parent.height - 8px) / 2;
+                }
+                Text {
+                    text: "Git: " + AppState.git-branch;
+                    font-size: Theme.fs-small;
+                    color: Theme.primary;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        if AppState.git-branch != "": Rectangle { width: 8px; horizontal-stretch: 0; }
+
+        // 右侧"新增"按钮（回收站视图下不显示）
+        if !root.in-recycle: NewButton {
+            horizontal-stretch: 0;
+        }
+    }
+}

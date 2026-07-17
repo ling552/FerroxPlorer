@@ -1,0 +1,218 @@
+import { Theme } from "theme.slint";
+import { AppState } from "globals.slint";
+
+component MenuRow inherits Rectangle {
+    in property <string> glyph;
+    in property <string> label;
+    in property <string> shortcut;
+    in property <bool> bold: false;
+    callback clicked;
+    height: Theme.row-h;
+    border-radius: Theme.radius-btn;
+    background: touch.has-hover ? Theme.primary-soft : transparent;
+    HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        spacing: 8px;
+        Text {
+            text: glyph;
+            width: 22px;
+            font-family: "Segoe MDL2 Assets";
+            font-size: 14px;
+            color: touch.has-hover ? Theme.primary : Theme.text;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: label;
+            font-size: Theme.fs-body;
+            font-weight: bold ? 700 : 400;
+            color: touch.has-hover ? Theme.primary : Theme.text;
+            vertical-alignment: center;
+        }
+        Rectangle { }
+        Text {
+            text: shortcut;
+            font-size: Theme.fs-tiny;
+            color: Theme.subtle;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// 右键上下文菜单，对照 design_ref 的 .context-menu
+export component ContextMenu inherits Rectangle {
+    in-out property <bool> open: false;
+    in-out property <length> menu-x;
+    in-out property <length> menu-y;
+    in-out property <int> target-index: -1;
+    // 当前目标是否为文件夹（仅文件夹可固定到快速访问）
+    in-out property <bool> target-is-dir: false;
+    // 当前目标条目的标签状态（供对勾显示）
+    in-out property <bool> target-important: false;
+    in-out property <bool> target-archive: false;
+    in-out property <bool> target-done: false;
+    // 背景模式：空白处右键（无目标项），显示新建/粘贴/刷新而非文件操作
+    in-out property <bool> is-background: false;
+    callback rename-requested(int);
+
+    // 是否处于回收站视图（显示"还原"项）
+    property <bool> in-recycle: AppState.current-vpath == "recycle://";
+
+    visible: open;
+    // 全屏遮罩，点击外部关闭
+    TouchArea {
+        clicked => { root.open = false; }
+        pointer-event(ev) => {
+            if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) {
+                root.open = false;
+            }
+        }
+    }
+
+    Rectangle {
+        x: min(root.menu-x, root.width - 240px);
+        y: min(root.menu-y, root.height - menu-col.preferred-height - 12px);
+        width: 234px;
+        // 高度收缩到菜单内容，避免背景一直延伸到窗口底部
+        height: menu-col.preferred-height;
+        border-radius: 12px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+        drop-shadow-blur: 30px;
+        drop-shadow-color: #21375038;
+        drop-shadow-offset-y: 12px;
+
+        menu-col := VerticalLayout {
+            padding: 6px;
+            spacing: 0px;
+
+            // ── 背景菜单（空白处右键：无目标项）──
+            if root.is-background: VerticalLayout {
+                spacing: 0px;
+                MenuRow {
+                    glyph: "\u{E8F4}"; label: "新建文件夹"; shortcut: "Ctrl+Shift+N";
+                    clicked => { AppState.new-folder(); root.open = false; }
+                }
+                MenuRow {
+                    glyph: "\u{E8A5}"; label: "新建文件";
+                    clicked => { AppState.new-file(); root.open = false; }
+                }
+                Rectangle { height: 11px;
+                    Rectangle { y: 5px; height: 1px; background: Theme.border; }
+                }
+                MenuRow {
+                    glyph: "\u{E77F}"; label: "粘贴"; shortcut: "Ctrl+V";
+                    clicked => { AppState.paste-here(); root.open = false; }
+                }
+                MenuRow {
+                    glyph: "\u{E72C}"; label: "刷新"; shortcut: "F5";
+                    clicked => { AppState.refresh(); root.open = false; }
+                }
+            }
+
+            // ── 文件菜单（条目右键：有目标项）──
+            if !root.is-background: VerticalLayout {
+                spacing: 0px;
+            MenuRow {
+                glyph: "\u{E8E5}"; label: "打开"; bold: true;
+                clicked => { AppState.open-entry(root.target-index); root.open = false; }
+            }
+            // 在新标签页中打开（仅文件夹）
+            if !root.in-recycle && root.target-is-dir: MenuRow {
+                glyph: "\u{E710}"; label: "在新标签页中打开";
+                clicked => { AppState.open-in-new-tab(root.target-index); root.open = false; }
+            }
+            // 在新面板中打开（仅文件夹）
+            if !root.in-recycle && root.target-is-dir: MenuRow {
+                glyph: "\u{E8A7}"; label: "在新面板中打开";
+                clicked => { AppState.open-in-new-panel(root.target-index); root.open = false; }
+            }
+            // 回收站视图：还原项
+            if root.in-recycle: MenuRow {
+                glyph: "\u{E7A7}"; label: "还原到原位置";
+                clicked => { AppState.restore-item(root.target-index); root.open = false; }
+            }
+            Rectangle { height: 11px;
+                Rectangle { y: 5px; height: 1px; background: Theme.border; }
+            }
+            MenuRow {
+                glyph: "\u{E8C8}"; label: "复制"; shortcut: "Ctrl+C";
+                clicked => { AppState.copy-selected(); root.open = false; }
+            }
+            MenuRow {
+                glyph: "\u{E8C6}"; label: "剪切"; shortcut: "Ctrl+X";
+                clicked => { AppState.cut-selected(); root.open = false; }
+            }
+            MenuRow {
+                glyph: "\u{E77F}"; label: "粘贴"; shortcut: "Ctrl+V";
+                clicked => { AppState.paste-here(); root.open = false; }
+            }
+            MenuRow {
+                glyph: "\u{E8AC}"; label: "重命名"; shortcut: "F2";
+                clicked => { root.rename-requested(root.target-index); root.open = false; }
+            }
+            MenuRow {
+                glyph: "\u{E74D}"; label: "删除"; shortcut: "Delete";
+                clicked => { AppState.delete-selected(); root.open = false; }
+            }
+            // 压缩为 zip（仅真实文件系统视图）
+            if !root.in-recycle: MenuRow {
+                glyph: "\u{E8B5}"; label: "压缩为 ZIP";
+                clicked => { AppState.compress-selected(root.target-index); root.open = false; }
+            }
+            // 解压到子文件夹（仅选中单个 ZIP 归档时显示）
+            if !root.in-recycle && AppState.sel-is-archive: MenuRow {
+                glyph: "\u{E896}"; label: "解压到子文件夹";
+                clicked => { AppState.extract-selected(); root.open = false; }
+            }
+            if !root.in-recycle && AppState.sel-is-archive: MenuRow {
+                glyph: "\u{E8DE}"; label: "解压到当前文件夹";
+                clicked => { AppState.extract-selected-here(); root.open = false; }
+            }
+            // 固定到快速访问（仅文件夹、非回收站）
+            if root.target-is-dir && !root.in-recycle: MenuRow {
+                glyph: "\u{E718}"; label: "固定到快速访问";
+                clicked => { AppState.pin-to-quick-access(root.target-index); root.open = false; }
+            }
+            Rectangle { height: 11px;
+                Rectangle { y: 5px; height: 1px; background: Theme.border; }
+            }
+            MenuRow {
+                glyph: root.target-important ? "\u{E73E}" : "";
+                label: "标记为 · 重要";
+                clicked => { AppState.toggle-tag(root.target-index, "important"); root.open = false; }
+            }
+            MenuRow {
+                glyph: root.target-archive ? "\u{E73E}" : "";
+                label: "标记为 · 待归档";
+                clicked => { AppState.toggle-tag(root.target-index, "archive"); root.open = false; }
+            }
+            MenuRow {
+                glyph: root.target-done ? "\u{E73E}" : "";
+                label: "标记为 · 已完成";
+                clicked => { AppState.toggle-tag(root.target-index, "done"); root.open = false; }
+            }
+            Rectangle { height: 11px;
+                Rectangle { y: 5px; height: 1px; background: Theme.border; }
+            }
+            MenuRow {
+                glyph: "\u{E946}"; label: "属性"; shortcut: "Alt+Enter";
+                clicked => { AppState.open-properties(root.target-index); root.open = false; }
+            }
+            // 更多系统选项：弹出 Windows 原生 Shell 右键菜单（含第三方应用注册项）
+            if !root.in-recycle: MenuRow {
+                glyph: "\u{E712}"; label: "更多系统选项";
+                clicked => {
+                    AppState.show-system-menu(root.target-index, root.menu-x, root.menu-y);
+                    root.open = false;
+                }
+            }
+            }
+        }
+    }
+}

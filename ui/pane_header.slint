@@ -1,0 +1,88 @@
+// 通用面板导航头部：后退 / 前进 / 上级 / 刷新 + 地址栏 + 标题副标题。
+// 左右面板共用同一组件，仅回调与显示数据由外部注入，从而两侧外观对称、各自独立导航。
+import { Theme } from "theme.slint";
+import { LineEdit } from "std-widgets.slint";
+
+// 导航小圆按钮（Segoe MDL2 字形）
+component NavBtn inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> enabled: true;
+    callback clicked();
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    background: touch.has-hover && root.enabled ? Theme.primary-soft : transparent;
+    Text {
+        text: root.glyph;
+        font-family: "Segoe MDL2 Assets";
+        font-size: 13px;
+        color: root.enabled ? Theme.primary : Theme.subtle;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { if (root.enabled) { root.clicked(); } }
+    }
+}
+
+export component PaneHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <string> vpath;
+    in property <bool> can-back: false;
+    in property <bool> can-forward: false;
+    // 是否为当前活动面板（用于高亮边框，凸显键盘/操作焦点所在）
+    in property <bool> active: false;
+    callback go-back();
+    callback go-forward();
+    callback go-up();
+    callback refresh();
+    callback navigate(string);
+
+    height: 66px;
+    background: rgba(255, 255, 255, 0.5);
+    Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
+
+    VerticalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 4px;
+
+        HorizontalLayout {
+            spacing: 4px;
+            NavBtn {
+                glyph: "\u{E72B}";
+                enabled: root.can-back;
+                clicked => { root.go-back(); }
+            }
+            NavBtn {
+                glyph: "\u{E72A}";
+                enabled: root.can-forward;
+                clicked => { root.go-forward(); }
+            }
+            NavBtn {
+                glyph: "\u{E74A}";
+                clicked => { root.go-up(); }
+            }
+            NavBtn {
+                glyph: "\u{E72C}";
+                clicked => { root.refresh(); }
+            }
+            addr := LineEdit {
+                horizontal-stretch: 1;
+                text: root.vpath;
+                placeholder-text: "输入路径后回车跳转";
+                accepted(t) => { root.navigate(t); }
+            }
+        }
+        Text {
+            text: root.title + (root.subtitle != "" ? "  ·  " + root.subtitle : "");
+            font-size: Theme.fs-small;
+            color: Theme.muted;
+            overflow: elide;
+        }
+    }
+}

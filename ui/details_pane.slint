@@ -1,0 +1,118 @@
+import { Theme } from "theme.slint";
+import { AppState } from "globals.slint";
+import { FileIcon } from "file_icon.slint";
+import { ScrollView } from "std-widgets.slint";
+
+component info-row inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    spacing: 10px;
+    Text {
+        text: label;
+        width: 74px;
+        font-size: Theme.fs-small;
+        color: Theme.subtle;
+    }
+    Text {
+        text: value;
+        font-size: Theme.fs-small;
+        color: Theme.text;
+        wrap: word-wrap;
+        horizontal-stretch: 1;
+    }
+}
+
+// 右侧详情/预览面板，对照 design_ref 的 .details-pane
+export component DetailsPane inherits Rectangle {
+    width: Theme.details-w;
+    background: Theme.surface-2.with-alpha(Theme.panel-alpha);
+    border-radius: Theme.radius-card;
+    clip: true;
+
+    ScrollView {
+        VerticalLayout {
+            padding: 16px;
+            spacing: 14px;
+            alignment: start;
+
+            if !AppState.has-selection: VerticalLayout {
+                padding-top: 40px;
+                spacing: 10px;
+                HorizontalLayout {
+                    alignment: center;
+                    // 矢量绘制的文档轮廓图标，避免依赖字体里可能缺失的符号字形
+                    Path {
+                        width: 52px;
+                        height: 52px;
+                        fill: Theme.subtle;
+                        fill-rule: evenodd;
+                        commands: "M14 2 H6 C4.9 2 4 2.9 4 4 V20 C4 21.1 4.9 22 6 22 H18 C19.1 22 20 21.1 20 20 V8 L14 2 Z M14 2 V8 H20 M8 13 H16 M8 16 H16 M8 19 H13";
+                    }
+                }
+                Text {
+                    text: "未选择项目";
+                    font-size: 15px;
+                    color: Theme.muted;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "选中文件后可预览属性, 标签与哈希摘要";
+                    font-size: Theme.fs-small;
+                    color: Theme.subtle;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+
+            if AppState.has-selection: card := Rectangle {
+                border-radius: 14px;
+                border-width: 1px;
+                border-color: Theme.border;
+                background: Theme.surface;
+                clip: true;
+                VerticalLayout {
+                    // 预览视觉块：有缩略图时直接渲染位图，否则渲染对应矢量图标
+                    Rectangle {
+                        height: 150px;
+                        background: AppState.sel-has-thumb
+                            ? Theme.surface-2
+                            : @linear-gradient(135deg, #0078d4 0%, #60cdff 100%);
+                        FileIcon {
+                            icon-class: AppState.sel-icon-class;
+                            thumb: AppState.sel-thumb;
+                            has-thumb: AppState.sel-has-thumb;
+                            box: 96px;
+                            radius: 16px;
+                        }
+                    }
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 4px;
+                        Text {
+                            text: AppState.sel-name;
+                            font-size: 16px;
+                            font-weight: 700;
+                            color: Theme.text;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: AppState.sel-kind;
+                            font-size: Theme.fs-small;
+                            color: Theme.muted;
+                            wrap: word-wrap;
+                        }
+                        // 信息列表
+                        VerticalLayout {
+                            padding-top: 10px;
+                            spacing: 8px;
+                            info-row { label: "位置"; value: AppState.sel-location; }
+                            info-row { label: "大小"; value: AppState.sel-size; }
+                            info-row { label: "修改时间"; value: AppState.sel-modified; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

@@ -1,0 +1,35 @@
+import { Theme } from "theme.slint";
+
+// 垂直分隔条：细视觉线 + 较宽透明拖拽热区
+// 采用"中心参考"增量：每次移动回调 (mouse-x - 热区中心)，让分隔条中心
+// 持续追随光标，避免按下点累积偏移导致的卡顿/僵硬感。
+export component VSplitter inherits Rectangle {
+    // 拖拽过程中：相对热区中心的水平位移（px），驱动宽度逐帧追随光标
+    callback dragged(length);
+    // 拖拽结束：持久化
+    callback committed();
+
+    width: 8px;
+
+    // 视觉分隔线（居中，悬停/拖拽时加粗高亮）
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        width: touch.has-hover || touch.pressed ? 3px : 1px;
+        height: parent.height;
+        background: touch.has-hover || touch.pressed ? Theme.primary : Theme.border;
+        animate width, background { duration: 100ms; easing: ease-out; }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: ew-resize;
+        moved => {
+            // 中心参考：把分隔条往光标方向推，宽度更新后热区随之平移，自然收敛
+            root.dragged(self.mouse-x - self.width / 2);
+        }
+        pointer-event(ev) => {
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) {
+                root.committed();
+            }
+        }
+    }
+}

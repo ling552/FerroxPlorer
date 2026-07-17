@@ -1,0 +1,81 @@
+# FerroxPlorer - Rust + Slint 现代文件管理器
+[package]
+name = "ferroxplorer"
+version = "0.1.0"
+edition = "2021"
+description = "现代化桌面文件管理器，Rust + Slint 实现"
+build = "build.rs"
+
+[dependencies]
+# 开启 unstable-winit-030：无边框窗口下访问 winit 窗口以实现自定义标题栏拖动
+slint = { version = "1.16", features = ["unstable-winit-030"] }
+# 用户主目录、系统标准目录定位
+dirs = "5"
+# 时间格式化（修改日期显示）
+chrono = "0.4"
+# 文件哈希计算
+sha2 = "0.10"
+md-5 = "0.10"
+sha1 = "0.10"
+# 打开文件使用系统默认程序
+open = "5"
+# ZIP 归档浏览（只读，最小 feature：仅 deflate 解压）
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# 序列化用户设置
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+# 日志门面：用于抑制 Slint 文本分词产生的 ICU4X warn 刷屏
+log = "0.4"
+# 显式启用 icu_provider 的 logging feature：
+# debug 模式下 icu_provider 默认把 warn! 别名成 eprintln! 直接打到 stderr，
+# 造成 "No segmentation model for language: ja" 刷屏。开启 logging feature 后
+# 它改走真正的 log crate；本程序未安装 logger，log 宏默认为 no-op，警告即消失。
+icu_provider = { version = "2.2.0", features = ["logging"] }
+# 文件系统实时监听：当前目录内容变化时自动刷新（无需手动 F5）
+notify = "6"
+# Git 集成：读取仓库分支与工作区文件状态（只读）。
+# 关闭默认的 ssh/https 特性——仅需本地仓库读取，避免引入 openssl 系统依赖；
+# libgit2 由 libgit2-sys 静态内联编译，无需系统预装 libgit2。
+git2 = { version = "0.19", default-features = false }
+# 图片 EXIF 解析（属性「详细信息」页）
+kamadak-exif = "0.6"
+# 音频标签解析（属性「详细信息」页：MP3/FLAC 等元数据）
+lofty = "0.21"
+# X.509 证书解析（属性「数字签名」页：展示 Authenticode 证书链）
+x509-parser = "0.16"
+# 归档：7z 读写
+sevenz-rust = "0.6"
+# 归档：TAR 读写
+tar = "0.4"
+# 归档：gzip 压缩流（tar.gz）
+flate2 = "1.0"
+
+[target.'cfg(windows)'.dependencies]
+# Windows 磁盘剩余空间查询、驱动器类型、DWM 窗口圆角
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_UI_Controls_Dialogs", "Win32_Graphics_Gdi", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_LibraryLoader"] }
+# 高层 COM 封装：调用 IShellItemImageFactory::GetImage 提取系统图标 / 图片缩略图 / 视频首帧；
+# 以及 Shell IContextMenu + TrackPopupMenuEx 弹出原生右键菜单（含第三方注册项）
+windows = { version = "0.59", features = ["Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization", "Win32_Devices_PortableDevices", "Win32_NetworkManagement_WNet"] }
+# Windows 注册表读取：枚举 ShellNew 新建项
+winreg = "0.52"
+# 从 winit 窗口取原始 HWND（用于 DWM 圆角）
+raw-window-handle = "0.6"
+# PNG 解码：运行时加载 icon.png 设置窗口图标（winit set_window_icon 需要 RGBA）
+png = "0.17"
+# winit 0.30：构造 Icon::from_rgba 设置窗口/任务栏图标
+winit = "0.30"
+
+[build-dependencies]
+slint-build = "1.16"
+
+[target.'cfg(windows)'.build-dependencies]
+# 将 icon.ico 嵌入 exe 作为应用程序图标（任务栏 + 标题栏）
+winres = "0.1"
+# 构建时从 icon.png 解码并多尺寸生成 icon.ico，保证图标单一来源
+png = "0.17"
+ico = "0.3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

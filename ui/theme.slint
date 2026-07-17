@@ -1,0 +1,100 @@
+// 主题：颜色与排版变量中枢。
+// 由 Rust 在启动时按用户设置写入下列 in-out 控制项，其余 token 均据此动态派生：
+//   theme-mode  亮/暗/跟随系统     accent-key 主题色键
+//   translucent 是否启用半透明      opacity-level 半透明不透明度
+//   blur-level  磨砂模糊强度        compact 紧凑模式
+
+export global Theme {
+    // ── 控制项（Rust 写入）──
+    in-out property <string> theme-mode: "system"; // system | light | dark
+    in-out property <string> accent-key: "blue";   // blue | purple | green | red | orange | custom
+    in-out property <color> accent-custom: #0078d4; // accent-key=="custom" 时使用的自定义颜色
+    in-out property <bool> translucent: false;
+    in-out property <float> opacity-level: 0.85;    // 0.30..1.0
+    in-out property <float> blur-level: 0.0;        // 0..30，磨砂模糊强度
+    in-out property <bool> compact: false;
+
+    // 跟随系统暂按亮色处理
+    out property <bool> dark: theme-mode == "dark";
+
+    // ── 半透明派生 ──
+    // 根底层填充的不透明度：仅由「不透明度」滑块控制。真正的磨砂浓度由 Rust 侧通过
+    // 非公开 API SetWindowCompositionAttribute（ACCENT_ENABLE_ACRYLICBLURBEHIND）
+    // 分 6 档阶梯调节（系统本身不提供可调的模糊半径，无法做到真连续），且 tint 用
+    // 中性灰而非近白色、alpha 上限也做了收敛，与此处的 opacity-level 完全解耦——
+    // 两者互不影响，才不会出现「模糊度越拖越白」的旧问题。
+    out property <float> shell-alpha: translucent
+        ? clamp(opacity-level, 0.30, 1.0)
+        : 1.0;
+    // 各面板"实心表面"的不透明度：半透明时归零（仅保留统一的根底层毛玻璃），否则不透明
+    out property <float> panel-alpha: translucent ? 0.0 : 1.0;
+    // 卡片/输入框等需保持可辨识的表面：半透明时给一点微弱填充
+    out property <float> card-alpha: translucent ? (dark ? 0.18 : 0.20) : 1.0;
+
+    // ── 主题色 ──
+    out property <brush> accent: accent-key == "custom" ? accent-custom
+        : accent-key == "purple" ? #7442bd
+        : accent-key == "green" ? #107c10
+        : accent-key == "red" ? #d13438
+        : accent-key == "orange" ? #ff8c00
+        : #0078d4;
+
+    // ── 背景与表面（暗色感知）──
+    out property <brush> bg: dark ? #161d28 : #edf3f9;
+    out property <brush> shell: dark ? #1f2734 : #f7fafd;          // 标题栏/工具栏/状态栏
+    out property <brush> surface: dark ? #2a3340 : #ffffff;        // 卡片/列表/输入
+    out property <brush> surface-2: dark ? #232b38 : #f5f9fd;      // 侧栏/详情/表头等次级面板
+    out property <brush> surface-translucent: dark ? #2a3340d2 : #ffffffd2;
+    // 列表奇偶行条纹：半透明时大幅减淡（避免白条压在壁纸上突兀），深色主题用白色微透
+    out property <brush> row-stripe: translucent
+        ? (dark ? #ffffff0d : #ffffff26)
+        : (dark ? #ffffff0a : #f8fbfeb8);
+    out property <brush> border: dark ? #ffffff1f : #23374721;
+    // ── 文字 ──
+    out property <brush> text: dark ? #e7edf5 : #152536;
+    out property <brush> muted: dark ? #9aa8ba : #607186;
+    out property <brush> subtle: dark ? #6f7e91 : #8a99aa;
+    // ── 主色与强调（随主题色联动）──
+    out property <brush> primary: accent;
+    out property <brush> primary-weak: dark ? accent.with-alpha(0.30) : accent.with-alpha(0.18);
+    out property <brush> primary-soft: accent.with-alpha(0.12);
+    out property <brush> primary-hover: accent.with-alpha(0.09);
+    // ── 语义色 ──
+    out property <brush> danger: #d13438;
+    out property <brush> success: #107c10;
+    out property <brush> warning: #ff8c00;
+    // ── 文件卡片图标渐变基色 ──
+    out property <brush> icon-default-bg: dark ? #2d4258 : #dcecff;
+    out property <brush> folder-bg: #f6b73c;
+    out property <brush> folder-fg: #865100;
+    out property <brush> image-bg: #78c2ff;
+    out property <brush> code-bg: #bdebcf;
+    out property <brush> code-fg: #107c10;
+    out property <brush> archive-bg: #d7bbff;
+    out property <brush> archive-fg: #7442bd;
+
+    // 圆角
+    out property <length> radius-btn: 8px;
+    out property <length> radius-card: 10px;
+    out property <length> radius-dialog: 16px;
+    out property <length> radius-shell: 10px;   // 主界面外壳圆角（与 DWM 窗口圆角协调；最大化时由 main.slint 归零，避免透出瑕疵）
+
+    // 字号
+    out property <length> fs-title: 19px;
+    out property <length> fs-body: 13px;
+    out property <length> fs-small: 12px;
+    out property <length> fs-tiny: 11px;
+
+    // 行高/尺寸（紧凑模式收紧行高）
+    out property <length> row-h: compact ? 28px : 34px;
+    out property <length> toolbar-h: 56px;
+    out property <length> actionbar-h: 34px;
+    out property <length> sidebar-w: 232px;
+    out property <length> details-w: 292px;
+
+    // 阴影（增强深度感）
+    out property <length> shadow-soft-blur: 28px;
+    out property <color> shadow-soft-color: rgba(30, 55, 90, 0.10);
+    out property <length> shadow-deep-blur: 70px;
+    out property <color> shadow-deep-color: rgba(30, 55, 90, 0.18);
+}

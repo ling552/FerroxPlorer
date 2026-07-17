@@ -1,0 +1,448 @@
+// 共享数据结构与全局状态：Rust ↔ Slint 桥接的核心契约
+
+// 单个文件/文件夹条目
+export struct FileEntry {
+    name: string,
+    path: string,
+    is-dir: bool,
+    size: string,
+    size-bytes: int,
+    modified: string,
+    modified-ts: int,
+    kind: string,
+    icon-label: string,
+    icon-class: string,
+    selected: bool,
+    tag-important: bool,
+    tag-archive: bool,
+    tag-done: bool,
+    // Git 状态徽章标识：""=无 / "M"=已修改 / "?"=未追踪 / "A"=已暂存 / "!"=冲突
+    git-status: string,
+    // 缩略图/系统图标（异步加载后由 Rust 回填）
+    thumb: image,
+    has-thumb: bool,
+    // ── "此电脑"平铺视图专用：驱动器容量信息（普通文件/文件夹为 0/空/透明）──
+    disk-ratio: float,    // 已用比例 0..1，>0 时平铺视图绘制容量条
+    disk-info: string,    // 容量副标题，如「可用 120 GB / 共 512 GB」
+    disk-color: brush,    // 容量条颜色（接近满时变红）
+}
+
+export struct Crumb {
+    name: string,
+    path: string,
+}
+
+// 属性「安全」页的单个访问控制项（ACE）
+export struct AclAce {
+    trustee: string,   // 受托人（域\用户）
+    kind: string,      // 允许 / 拒绝
+    access: string,    // 权限文本（完全控制 / 读取和执行 / 写入 …）
+}
+
+// 属性「详细信息」页的单行扩展元数据（键值对）
+export struct MetaRow {
+    label: string,
+    value: string,
+}
+
+// 属性「数字签名」页的单张证书信息
+export struct CertInfo {
+    subject: string,    // 使用者
+    issuer: string,     // 颁发者
+    valid-from: string, // 有效期起
+    valid-to: string,   // 有效期止
+}
+
+export struct NavItem {
+    label: string,
+    path: string,
+    icon: string,
+    // 矢量图标类别（drive/device 等），用于侧栏驱动器/设备渲染内置字形；普通项为空
+    icon-class: string,
+    badge: string,
+    is-header: bool,
+    is-disk: bool,
+    disk-ratio: float,
+    disk-info: string,
+    disk-color: brush,
+    active: bool,
+    collapsed: bool,
+    // 树节点表头（如"此电脑"）：表头本身可点击导航并可展开/折叠子项
+    is-tree: bool,
+    // 系统图标位图：icon-source=系统图标 时由 Rust 回填；内置图标模式下 has-thumb=false
+    thumb: image,
+    has-thumb: bool,
+}
+
+export struct HashResult {
+    algo: string,
+    value: string,
+}
+
+export struct TabInfo {
+    title: string,
+    path: string,
+    active: bool,
+    kind: string,   // "files" | "settings"
+}
+
+// 命令面板单条命令（由 Rust 过滤/填充）
+export struct Command {
+    icon: string,           // MDL2 图标
+    title: string,          // 主标题
+    description: string,    // 描述文本
+    shortcut: string,       // 快捷键提示
+    action: string,         // 操作标识符（含 "cd:<路径>" 表示跳转）
+}
+
+// "新增"菜单的单个条目：对应系统注册表 ShellNew 项（文件夹 / 各类文件模板）
+export struct ShellNewEntry {
+    name: string,        // 友好名称（如"文本文档""文件夹"）
+    icon-class: string,  // 内置矢量图标类别（folder/image/code/archive/pdf/default）
+    icon-label: string,  // 内置图标上的扩展名小标签
+    thumb: image,        // 系统图标位图（icon-source=系统图标 时由 Rust 回填）
+    has-thumb: bool,     // 是否已取得系统图标
+}
+
+export global AppState {
+    in-out property <[FileEntry]> entries;
+    in-out property <[Crumb]> crumbs;
+    in-out property <[NavItem]> nav-items;
+    in-out property <string> current-title;
+    in-out property <string> current-subtitle;
+    in-out property <string> status-text;
+    // 当前目录所属 Git 仓库分支名（空串=非仓库，UI 据此隐藏内容头 Git 芯片）
+    in-out property <string> git-branch;
+    // 布局：仅 "grid" 网格 / "list" 详细信息两种，与是否双面板正交。
+    // 进入双面板后两侧面板共用此布局；单面板时主区域使用此布局。
+    in-out property <string> view-mode: "list";
+    // 是否处于双面板模式（与 view-mode 正交：双面板下两侧仍按 view-mode 渲染）
+    in-out property <bool> dual-pane: false;
+    // 双面板左侧占比（0.15..0.85），由分隔条拖拽调整、设置项联动、Rust 持久化
+    in-out property <float> dual-ratio: 0.5;
+    // 双面板当前活动面板（"left" / "right"）：公用工具栏的导航/地址栏据此路由到对应面板。
+    // 点击某面板内的条目或空白区时切换。
+    in-out property <string> active-pane: "left";
+    // 切换双面板开关
+    callback toggle-dual();
+    // 双面板比例拖拽结束时持久化
+    callback save-dual-ratio(float);
+    in-out property <string> omni-mode: "path";
+    in-out property <string> search-text;
+    in-out property <bool> can-back: false;
+    in-out property <bool> can-forward: false;
+    in-out property <bool> has-selection: false;
+    in-out property <string> sel-name;
+    in-out property <string> sel-kind;
+    in-out property <string> sel-location;
+    in-out property <string> sel-size;
+    in-out property <string> sel-modified;
+    in-out property <string> sel-created;
+    // 默认打开程序友好名（属性「常规」页「打开方式」行；文件夹/无关联为空）
+    in-out property <string> sel-open-with;
+    // ── 属性「安全」页：所有者 + 简化权限摘要（由 Rust 读取文件属性回填）──
+    in-out property <string> sel-owner;
+    in-out property <string> sel-attributes;   // 如「只读、隐藏」或「普通」
+    in-out property <bool> sel-readonly;
+    // ── 属性「安全」页：DACL 访问控制项列表 ──
+    in-out property <[AclAce]> sel-acl-entries;
+    // ── 属性「详细信息」页：扩展元数据（EXIF/音频标签/Office）──
+    in-out property <[MetaRow]> sel-meta-rows;
+    // ── 属性「数字签名」页：证书链 ──
+    in-out property <[CertInfo]> sel-cert-chain;
+    // ── 属性「数字签名」页 ──
+    // 0 不适用（非可执行）/ 1 已签名 / 2 未签名 / 3 读取错误
+    in-out property <int> sel-sign-status;
+    in-out property <string> sel-sign-detail;  // 状态说明文本
+    in-out property <string> sel-icon-label;
+    in-out property <string> sel-icon-class;
+    // 选中项缩略图/系统图标位图（右侧详情面板预览用）
+    in-out property <image> sel-thumb;
+    in-out property <bool> sel-has-thumb: false;
+    in-out property <bool> show-details: true;
+    in-out property <bool> command-palette-open: false;
+    // 命令面板：Rust 过滤/填充的命令列表 + 查询/执行回调
+    in-out property <[Command]> palette-commands;
+    in-out property <int> palette-selected: 0;
+    callback palette-query(string);  // 输入变化 → Rust 过滤命令并识别路径
+    callback palette-run(string);    // 执行 action（含 "cd:<path>" 跳转）
+    // 主体视图："files" 文件浏览 / "settings" 设置（由活动标签页类型决定）
+    in-out property <string> active-view: "files";
+    // 当前路径（真实路径或虚拟路径 tag:// recycle:// network://），供右键菜单判断上下文
+    in-out property <string> current-vpath;
+
+    // 可调整的三栏宽度与详细视图列宽（启动时由 Rust 从配置推送，拖拽后回写）
+    in-out property <length> sidebar-w: 232px;
+    in-out property <length> details-w: 292px;
+    in-out property <length> col-modified-w: 150px;
+    in-out property <length> col-kind-w: 96px;
+    in-out property <length> col-size-w: 84px;
+    // 详细视图三个固定列的显示槽位（0..2）：拖拽表头交换顺序，会话内生效
+    in-out property <int> col-modified-ord: 0;
+    in-out property <int> col-kind-ord: 1;
+    in-out property <int> col-size-ord: 2;
+    // 持久化布局（拖拽结束时调用，参数为像素值）
+    callback save-layout(length, length, length, length, length);
+
+    callback navigate(string);
+    callback open-entry(int);
+    callback select-entry(int, bool);
+    callback select-range(int);
+    // 框选（活动标签/左面板）：参数为 行起、行止、列起、列止、列数、是否追加（Ctrl）。
+    // 列表视图列数恒为 1（列起止均为 0）；网格视图为二维矩形子区。Rust 据此把
+    // idx = row*cols+col（且 idx<总数）的条目置为选中。
+    callback box-select(int, int, int, int, int, bool);
+    // 清空选择（点击空白处）
+    callback clear-selection();
+    callback go-back();
+    callback go-forward();
+    callback go-up();
+    callback refresh();
+    callback set-view(string);
+    callback set-omni-mode(string);
+    callback do-search(string);
+    callback commit-path(string);
+    // ── Omnibar 路径补全：edit 模式输入时 Rust 回填候选；> 前缀切命令补全 ──
+    in-out property <[Crumb]> path-completions;
+    in-out property <bool> omni-cmd-mode: false;
+    in-out property <int> omni-cmd-selected: 0;
+    callback request-path-completion(string);
+    // ── 网络位置：添加 SMB 连接对话框 ──
+    in-out property <bool> netloc-dialog-open: false;
+    in-out property <string> netloc-name;
+    in-out property <string> netloc-server;
+    in-out property <string> netloc-user;
+    in-out property <string> netloc-pass;
+    callback add-network-location();
+    callback remove-network-location(string);
+    callback toggle-details();
+    callback copy-selected();
+    callback cut-selected();
+    callback paste-here();
+    callback delete-selected();
+    // 提交重命名（左面板/活动标签条目）。回调自带面板语义，
+    // 不依赖提交瞬间的 active-pane——编辑中途切换面板不会改错对象
+    callback rename-entry(int, string);
+    // 提交重命名（右侧独立面板条目）
+    callback r-rename-entry(int, string);
+    callback request-rename();
+    // 正在重命名编辑的条目下标（-1 表示无）。全局统一管理，避免各视图各持一份导致状态不同步
+    in-out property <int> editing-index: -1;
+    // 右面板正在重命名编辑的条目下标（-1 表示无）。与 editing-index 独立，
+    // 避免双面板下同下标条目同时进入编辑
+    in-out property <int> r-editing-index: -1;
+    callback new-folder();
+    callback new-file();
+    // 撤销最近一次可逆操作（重命名 / 新建 / 移动 / 删除），Ctrl+Z 触发
+    callback undo();
+    // 重做最近一次被撤销的操作，Ctrl+Shift+Z 触发
+    callback redo();
+    // "新增"菜单项：启动时由 Rust 枚举系统右键"新建"注册项填充
+    in-out property <[ShellNewEntry]> new-menu-items;
+    // 创建 new-menu-items 中第 index 项（在当前目录），创建后进入行内重命名
+    callback create-new-item(int);
+    callback select-all();
+    callback open-properties(int);
+    callback compute-hash(string) -> string;
+    // 校验：传入期望哈希值，自动识别算法并与选中文件实际值比对，
+    // 结果写入 verify-result/verify-status（由 Rust 回填）
+    callback verify-hash(string);
+    in-out property <string> verify-result;
+    in-out property <int> verify-status; // 0 空闲 / 1 匹配 / 2 不匹配 / 3 错误
+    // 将文本写入系统剪贴板（复制哈希值用）
+    callback copy-text(string);
+    // 「打开方式 - 更改」：弹出系统「打开方式」对话框（SHOpenWithDialog）
+    callback open-with-dialog();
+    in-out property <[HashResult]> hashes;
+
+    // ════════ 空格键 Quick Look 预览（类 macOS 快速查看）════════
+    in-out property <bool> quicklook-open: false;
+    // 预览内容类型：0 信息 / 1 图片 / 2 文本 / 3 文件夹
+    in-out property <int> ql-kind;
+    in-out property <string> ql-name;
+    in-out property <string> ql-subtitle;     // 类型 + 大小等副标题
+    in-out property <image> ql-image;          // 图片预览大图（ql-kind==1）
+    in-out property <bool> ql-has-image;
+    in-out property <string> ql-text;          // 文本预览内容（ql-kind==2）
+    in-out property <string> ql-info;          // 文件夹统计 / 其它信息（ql-kind==0/3）
+    in-out property <string> ql-icon-class;    // 无缩略图时的矢量图标类别
+    // 条目的真实缩略图/系统图标（取自文件列表模型），头部与信息页大图标优先使用
+    in-out property <image> ql-thumb;
+    in-out property <bool> ql-has-thumb: false;
+    // 打开当前选中项的 Quick Look 预览（由空格键触发）
+    callback open-quicklook();
+    // 关闭 Quick Look（空格键再次按下 / Esc）
+    callback close-quicklook();
+    callback sort-by(string);
+    in-out property <string> sort-key: "name";
+    in-out property <bool> sort-asc: true;
+
+    // 标签页
+    in-out property <[TabInfo]> tabs;
+    in-out property <int> active-tab: 0;
+    callback new-tab();
+    callback close-tab-at(int);
+    callback switch-tab(int);
+    callback move-tab(int, int);
+    callback open-settings-tab();
+
+    // 侧边栏分区折叠
+    callback toggle-section(string);
+
+    // 标签：切换某条目（filtered 下标）的某标签键
+    callback toggle-tag(int, string);
+    // 标签：对当前全部选中项统一切换某标签键（顶部工具栏「标记」下拉用）。
+    // 语义：若选中项全部已含该标签则去除，否则全部添加。
+    callback tag-selected(string);
+    // 当前选中项的标签状态（供工具栏「标记」下拉显示对勾）。
+    // 单选时为该项状态；多选时表示「是否全部选中项都含该标签」。
+    in-out property <bool> sel-tag-important: false;
+    in-out property <bool> sel-tag-archive: false;
+    in-out property <bool> sel-tag-done: false;
+    // 回收站：还原某条目（filtered 下标）到原位置
+    callback restore-item(int);
+
+    // ── 右键菜单扩展操作 ──
+    // 在新标签页中打开（文件夹进入该目录；文件进入其父目录）
+    callback open-in-new-tab(int);
+    // 在新面板中打开（进入该文件夹并切换到双面板视图）
+    callback open-in-new-panel(int);
+    // 压缩为 zip（压缩选中项到当前目录，后台任务执行）
+    callback compress-selected(int);
+    // 压缩为指定格式（参数：回退目标下标、格式 "zip"/"7z"/"tar"/"targz"）
+    callback compress-selected-fmt(int, string);
+    // 解压选中的 ZIP 归档到以归档名命名的子文件夹
+    callback extract-selected();
+    // 解压选中的 ZIP 归档到当前文件夹（内容直接落在当前目录）
+    callback extract-selected-here();
+    // 当前是否单选了一个可解压的 ZIP 归档（控制 ActionBar「解压」按钮显示）
+    in-out property <bool> sel-is-archive: false;
+    // 活动面板选中项数量（ActionBar 按钮可用性判定；has-selection 语义为「恰好单选」不通用）
+    in-out property <int> sel-count: 0;
+    // 剪贴板是否有待粘贴内容（复制/剪切后为真，剪切粘贴完成后清空）
+    in-out property <bool> can-paste: false;
+    // 弹出 Windows 原生 Shell 右键菜单（参数：目标下标、窗口内像素坐标 x/y）
+    callback show-system-menu(int, length, length);
+    // 固定到快速访问（参数：目标下标；仅文件夹有效）
+    callback pin-to-quick-access(int);
+
+    // 回收站快捷操作栏
+    callback restore-selected();          // 恢复选中
+    callback restore-all();               // 恢复全部
+    callback delete-permanent-selected(); // 彻底删除选中
+    callback delete-permanent-all();      // 彻底删除全部（清空回收站）
+
+    // ════════ 用户设置项（启动时由 Rust 推送，控件改动后回写持久化）════════
+    // 主题相关项存放在 Theme 全局中，此处仅保留非主题设置项。
+    // ── 常规 ──
+    in-out property <bool> set-launch-startup: false;
+    in-out property <bool> set-single-click: true;
+    // 将本应用设为默认文件管理器（注册表接管文件夹打开与 Win+E）
+    in-out property <bool> set-default-fm: false;
+    in-out property <string> set-language: "简体中文";
+    in-out property <string> set-startup-open: "上次的标签页";
+    // ── 外观（非 Theme 部分）──
+    in-out property <string> set-icon-source: "系统图标";
+    // ── 文件夹 ──
+    in-out property <bool> set-show-hidden: false;
+    in-out property <bool> set-show-ext: true;
+    in-out property <bool> set-show-protected: false;
+    in-out property <bool> set-calc-size: false;
+    in-out property <bool> set-folders-first: true;
+    in-out property <string> set-default-view: "详细信息";
+    in-out property <string> set-default-sort: "名称";
+    // ── 标签页与面板 ──
+    in-out property <bool> set-restore-tabs: true;
+    in-out property <bool> set-exit-last-tab: false;
+    in-out property <string> set-new-tab-loc: "快速访问";
+    in-out property <bool> set-show-details-default: true;
+    in-out property <bool> set-dual-default: false;
+    in-out property <string> set-split-ratio: "50% / 50%";
+    // ── 搜索与索引 ──
+    in-out property <bool> set-live-filter: true;
+    in-out property <bool> set-search-subfolders: false;
+    in-out property <bool> set-case-sensitive: false;
+    in-out property <bool> set-background-index: false;
+    in-out property <string> set-index-location: "用户目录";
+    // 右键菜单：true=系统原生菜单（含第三方注册项），false=应用自定义菜单
+    in-out property <bool> set-context-menu-system: true;
+
+    // 通用 setter：key 标识具体设置项，Rust 据此更新配置并持久化、应用副作用
+    callback set-bool(string, bool);
+    callback set-string(string, string);
+    callback set-number(string, float);
+    // 请求打开系统取色板（主题色自定义）：Rust 调用 Win32 ChooseColor 对话框，
+    // 选定后回写 accent="custom" + accent-custom 颜色值到 Theme
+    callback request-color-pick();
+
+    // ════════ 双面板：右侧独立面板状态（与活动标签 entries 互不影响）════════
+    in-out property <[FileEntry]> r-entries;
+    in-out property <[Crumb]> r-crumbs;
+    in-out property <string> r-current-title;
+    in-out property <string> r-current-subtitle;
+    in-out property <string> r-current-vpath;
+    in-out property <bool> r-can-back: false;
+    in-out property <bool> r-can-forward: false;
+    // 设置当前活动面板（点击面板内容时调用）
+    callback set-active-pane(string);
+    callback r-navigate(string);     // 地址栏提交 / 面包屑跳转
+    callback r-open-entry(int);      // 双击：文件夹进入、文件打开
+    callback r-select-entry(int);    // 单击选中（单选高亮）
+    callback r-go-back();
+    callback r-go-forward();
+    callback r-go-up();
+    callback r-refresh();
+    // 右面板框选（参数同 box-select）。右面板亦支持多选高亮。
+    callback r-box-select(int, int, int, int, int, bool);
+    // 右面板清空选择
+    callback r-clear-selection();
+
+    // ════════ 图标缩放（Ctrl + 鼠标滚轮）：列表/网格视图共用，双面板同步 ════════
+    // 缩放比例，1.0 为默认。范围 0.7..2.0，由各视图的输入层调节并经 set-number 持久化。
+    in-out property <float> icon-scale: 1.0;
+
+    // ════════ 跨面板拖拽：在两个面板间拖动条目（默认复制，按住 Ctrl 移动）════════
+    in-out property <bool> pane-drag-active: false;  // 是否正在跨面板拖拽
+    in-out property <string> pane-drag-source;       // 拖拽源面板 "left" / "right"
+    in-out property <length> pane-drag-x;            // 指针窗口坐标 x（拖拽提示定位）
+    in-out property <length> pane-drag-y;            // 指针窗口坐标 y
+    in-out property <string> pane-drag-label;        // 首个拖拽条目名（提示显示）
+    // 左右面板分隔的窗口 x 坐标，由 DualPane 维护：指针落点 < 此值归左面板，否则归右面板
+    in-out property <length> pane-split-x;
+    // 跨面板放下：(源面板, 是否按住 Ctrl)。Rust 把源面板选中项复制(默认)/移动(Ctrl)到目标面板目录
+    callback pane-drop(string, bool);
+
+    // ════════ 后台任务（复制 / 移动）实时进度 ════════
+    in-out property <bool> task-active: false;       // 是否有任务在执行（显示进度卡片）
+    in-out property <string> task-operation: "复制文件";
+    in-out property <string> task-current-file;
+    in-out property <string> task-target;
+    in-out property <int> task-completed;
+    in-out property <int> task-total;
+    in-out property <float> task-progress;           // 0.0 - 1.0
+    in-out property <string> task-speed: "计算中…";
+    in-out property <string> task-eta: "计算中…";
+    in-out property <bool> task-paused: false;
+    // 暂停 / 继续切换
+    callback task-pause();
+    // 取消当前任务
+    callback task-cancel();
+    // 任务完成（由 Rust 工作线程经事件循环回调）：参数为成功数量、错误信息
+    callback task-finished(int, string);
+
+    // ════════ 目录实时监听：当前目录内容被外部程序改动时自动刷新 ════════
+    // 由 Rust 的文件监听线程经事件循环触发（非 UI 直接调用）。
+    // 处理器执行「软刷新」：重新读取当前目录，同时保留搜索词与选中项。
+    callback auto-refresh();
+
+    // ════════ 同名冲突解决对话框（复制 / 移动遇到目标已存在同名项）════════
+    in-out property <bool> conflict-open: false;       // 是否显示对话框
+    in-out property <string> conflict-name;            // 冲突项名称
+    in-out property <string> conflict-operation;       // 「复制文件」/「移动文件」
+    in-out property <string> conflict-src-info;        // 源：大小 · 修改日期
+    in-out property <string> conflict-dst-info;        // 目标：大小 · 修改日期
+    in-out property <bool> conflict-is-dir: false;     // 冲突项是否文件夹
+    in-out property <bool> conflict-apply-all: false;  // 「应用到后续全部」勾选状态
+    // 用户处置：decision = "overwrite"/"skip"/"rename"，第二参为是否应用到后续全部
+    callback conflict-choose(string, bool);
+}

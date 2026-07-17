@@ -1,0 +1,222 @@
+// 双面板视图的右侧独立文件面板：与左侧共享布局（网格 / 列表，由 AppState.view-mode 决定）。
+// 读写 AppState 的 r-* 状态，与左侧（活动标签）完全独立。
+// 指针交互（点击/双击/右键/空白框选/跨面板拖拽/Ctrl+滚轮缩放）由 InputOverlay 统一处理。
+import { Theme } from "theme.slint";
+import { AppState, FileEntry } from "globals.slint";
+import { FileIcon } from "file_icon.slint";
+import { InputOverlay } from "input_overlay.slint";
+import { RenameEdit } from "rename_edit.slint";
+import { ListView } from "std-widgets.slint";
+
+// 右面板列表视图（支持框选多选，绑定 r-entries）
+component RightList inherits Rectangle {
+    callback request-context-menu(int, length, length);
+    property <length> scaled-row-h: Theme.row-h * AppState.icon-scale;
+    property <length> icon-box: 18px * AppState.icon-scale;
+
+    list := ListView {
+        width: 100%;
+        height: 100%;
+        for entry[i] in AppState.r-entries: row := Rectangle {
+            height: root.scaled-row-h;
+            // 选中/悬停随主题色联动，奇偶条纹与左面板 FileList 一致
+            background: entry.selected
+                ? Theme.primary.with-alpha(0.15)
+                : (ov.hover-idx == i ? Theme.primary.with-alpha(0.06)
+                    : (mod(i, 2) == 1 ? Theme.row-stripe : transparent));
+            // 默认 stretch 布局（勿加 alignment: start——非 stretch 对齐下
+            // 名称区包裹 Rectangle 的首选宽为 0，文件名会整体塌缩不可见）：
+            // 图标与日期取首选宽，名称区经 horizontal-stretch: 1 占满剩余空间
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 10px;
+
+                FileIcon {
+                    icon-class: entry.icon-class;
+                    label: entry.icon-label;
+                    thumb: entry.thumb;
+                    has-thumb: entry.has-thumb;
+                    compact: true;
+                    box: root.icon-box;
+                    y: (parent.height - root.icon-box) / 2;
+                }
+                // 名称区：正常显示文本，进入行内重命名（r-editing-index 命中）时换成输入框
+                Rectangle {
+                    horizontal-stretch: 1;
+                    if AppState.r-editing-index != i: Text {
+                        width: 100%;
+                        height: 100%;
+                        text: entry.name;
+                        font-size: Theme.fs-small;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    if AppState.r-editing-index == i: RenameEdit {
+                        width: 100%;
+                        y: (parent.height - self.height) / 2;
+                        text: entry.name;
+                        font-size: Theme.fs-small;
+                        // 按 Escape 退出重命名
+                        cancel => { AppState.r-editing-index = -1; }
+                        commit(t) => {
+                            AppState.r-rename-entry(i, t);
+                            AppState.r-editing-index = -1;
+                        }
+                    }
+                }
+                Text {
+                    text: entry.is-dir ? entry.modified : entry.size;
+                    font-size: Theme.fs-tiny;
+                    color: Theme.subtle;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+    ov := InputOverlay {
+        width: 100%;
+        height: 100%;
+        pane: "right";
+        mode: "list";
+        count: AppState.r-entries.length;
+        cols: 1;
+        row-h: root.scaled-row-h;
+        left-pad: 12px;
+        vp-y <=> list.viewport-y;
+        vp-h: list.viewport-height;
+        vis-h: list.visible-height;
+        request-context-menu(i, mx, my) => { root.request-context-menu(i, mx, my); }
+    }
+}
+
+// 右面板网格视图（按行虚拟化，绑定 r-entries），与 FileGrid 视觉一致
+component RightGrid inherits Rectangle {
+    callback request-context-menu(int, length, length);
+    clip: true;
+    property <length> cell-w: 112px * AppState.icon-scale;
+    property <length> icon-box: 58px * AppState.icon-scale;
+    property <length> info-h: 16px;
+    property <length> cell-h: max(root.cell-w, 12px + root.icon-box + 30px + root.info-h + 10px);
+    property <length> pitch: root.cell-w + 10px;
+    property <length> row-h: root.cell-h + 10px;
+    property <int> cols: max(1, floor((list.visible-width - 24px) / root.pitch));
+    property <int> rows: ceil(AppState.r-entries.length / max(1, root.cols));
+
+    list := ListView {
+        width: 100%;
+        height: 100%;
+        for r in root.rows: Rectangle {
+            height: root.row-h;
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: r == 0 ? 12px : 0px;
+                spacing: 10px;
+                alignment: start;
+
+                for col in root.cols: cell := Rectangle {
+                    property <int> idx: r * root.cols + col;
+                    property <bool> valid: self.idx < AppState.r-entries.length;
+                    width: root.cell-w;
+                    height: root.cell-h;
+
+                    if cell.valid: card := Rectangle {
+                        property <FileEntry> entry: AppState.r-entries[cell.idx];
+                        border-radius: Theme.radius-card;
+                        border-width: 1px;
+                        border-color: card.entry.selected ? #0078d473 : transparent;
+                        background: card.entry.selected
+                            ? #0078d426
+                            : (ov.hover-idx == cell.idx ? #0078d412 : transparent);
+                        clip: true;
+
+                        VerticalLayout {
+                            padding-top: 12px;
+                            padding-bottom: 10px;
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 0px;
+                            alignment: start;
+                            HorizontalLayout {
+                                alignment: center;
+                                FileIcon {
+                                    icon-class: card.entry.icon-class;
+                                    label: card.entry.icon-label;
+                                    thumb: card.entry.thumb;
+                                    has-thumb: card.entry.has-thumb;
+                                    box: root.icon-box;
+                                }
+                            }
+                            if AppState.r-editing-index != cell.idx: Text {
+                                text: card.entry.name;
+                                font-size: Theme.fs-small;
+                                color: Theme.text;
+                                horizontal-alignment: center;
+                                wrap: char-wrap;
+                                overflow: elide;
+                                height: 30px;
+                            }
+                            if AppState.r-editing-index == cell.idx: RenameEdit {
+                                text: card.entry.name;
+                                font-size: Theme.fs-small;
+                                // 按 Escape 退出重命名
+                                cancel => { AppState.r-editing-index = -1; }
+                                commit(t) => {
+                                    AppState.r-rename-entry(cell.idx, t);
+                                    AppState.r-editing-index = -1;
+                                }
+                            }
+                            Text {
+                                text: card.entry.is-dir ? card.entry.modified : card.entry.size;
+                                font-size: Theme.fs-tiny;
+                                color: Theme.subtle;
+                                height: root.info-h;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    ov := InputOverlay {
+        width: 100%;
+        height: 100%;
+        pane: "right";
+        mode: "grid";
+        count: AppState.r-entries.length;
+        cols: root.cols;
+        row-h: root.row-h;
+        cell-w: root.cell-w;
+        pitch-x: root.pitch;
+        top-pad: 12px;
+        left-pad: 12px;
+        vp-y <=> list.viewport-y;
+        vp-h: list.viewport-height;
+        vis-h: list.visible-height;
+        request-context-menu(i, mx, my) => { root.request-context-menu(i, mx, my); }
+    }
+}
+
+export component RightPane inherits Rectangle {
+    callback request-context-menu(int, length, length);
+    // 内容区：与左侧共享 view-mode 决定网格 / 列表。
+    // 导航由公用工具栏统一驱动，此处不再携带独立头部。
+    // 注意：此 6px 与 dual_pane.slint 右面板菜单坐标偏移（+16px = 6+8+2）联动
+    VerticalLayout {
+        padding: 6px;
+        Rectangle {
+            vertical-stretch: 1;
+            if AppState.view-mode == "grid": RightGrid {
+                request-context-menu(i, mx, my) => { root.request-context-menu(i, mx, my); }
+            }
+            if AppState.view-mode != "grid": RightList {
+                request-context-menu(i, mx, my) => { root.request-context-menu(i, mx, my); }
+            }
+        }
+    }
+}

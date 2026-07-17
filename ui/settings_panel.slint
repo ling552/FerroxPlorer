@@ -1,0 +1,961 @@
+// 设置面板：应用程序设置界面（已接入真实状态与持久化）
+// 分区与项目对照《开发文档.md》5.11 设置界面
+import { Theme } from "theme.slint";
+import { AppState } from "globals.slint";
+
+// ── 左侧导航项 ──
+component SettingsNavItem inherits Rectangle {
+    in property <string> label;
+    in property <string> glyph;
+    in property <bool> active: false;
+    callback clicked();
+
+    height: 34px;
+    border-radius: 8px;
+    background: active ? Theme.primary-soft : (touch.has-hover ? Theme.primary-hover : transparent);
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 9px;
+        spacing: 9px;
+        Text {
+            text: glyph;
+            font-family: "Segoe MDL2 Assets";
+            font-size: 14px;
+            color: active ? Theme.primary : Theme.subtle;
+            vertical-alignment: center;
+        }
+        Text {
+            text: label;
+            font-size: 13px;
+            color: active ? Theme.primary : Theme.text;
+            font-weight: active ? 700 : 400;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// ── 开关（受控：自身不翻转，点击发出目标值，由状态回流驱动）──
+component Switch inherits Rectangle {
+    in property <bool> checked: false;
+    callback toggled(bool);
+    width: 44px;
+    height: 24px;
+    border-radius: 12px;
+    background: checked ? Theme.primary : (Theme.dark ? #3a4658 : #c7d4e1);
+    animate background { duration: 150ms; easing: ease; }
+    Rectangle {
+        x: checked ? parent.width - 21px : 3px;
+        y: 3px;
+        width: 18px; height: 18px;
+        border-radius: 9px;
+        background: white;
+        drop-shadow-blur: 6px;
+        drop-shadow-color: rgba(0, 0, 0, 0.18);
+        animate x { duration: 150ms; easing: ease-out; }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(!root.checked); }
+    }
+}
+
+// ── 颜色选择圆点 ──
+component ColorSwatch inherits Rectangle {
+    in property <brush> swatch-color;
+    in property <bool> selected: false;
+    // 取色板色块：叠加右下角画笔角标，提示可点击打开系统取色器自定义颜色
+    in property <bool> is-picker: false;
+    callback clicked();
+    width: 24px; height: 24px;
+    border-radius: 12px;
+    background: swatch-color;
+    border-width: selected ? 3px : 1px;
+    border-color: selected ? Theme.primary : rgba(0, 0, 0, 0.08);
+    animate border-width { duration: 100ms; }
+
+    if is-picker: Rectangle {
+        width: 13px; height: 13px;
+        x: parent.width - self.width + 2px;
+        y: parent.height - self.height + 2px;
+        border-radius: 6.5px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+        Text {
+            text: "\u{E790}";
+            font-family: "Segoe MDL2 Assets";
+            font-size: 8px;
+            color: Theme.muted;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2 - 1px;
+        }
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// ── 下拉选择（点击弹出选项列表）──
+component Dropdown inherits Rectangle {
+    in property <string> value;
+    in property <[string]> options;
+    in property <length> box-w: 180px;
+    callback selected(string);
+    width: box-w;
+    height: 32px;
+    border-radius: 8px;
+    background: touch.has-hover ? Theme.primary-hover : (Theme.dark ? rgba(255, 255, 255, 0.06) : rgba(0, 0, 0, 0.035));
+    border-width: 1px;
+    border-color: Theme.border;
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 9px;
+        spacing: 6px;
+        Text {
+            text: root.value;
+            font-size: 13px;
+            color: Theme.text;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        Text {
+            text: "\u{E70D}";
+            font-family: "Segoe MDL2 Assets";
+            font-size: 9px;
+            color: Theme.subtle;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { pop.show(); }
+    }
+    pop := PopupWindow {
+        x: 0px;
+        y: root.height + 4px;
+        width: root.box-w;
+        Rectangle {
+            background: Theme.surface;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: 18px;
+            drop-shadow-color: rgba(0, 0, 0, 0.20);
+            VerticalLayout {
+                padding: 4px;
+                for opt in root.options: Rectangle {
+                    height: 30px;
+                    border-radius: 6px;
+                    background: ot.has-hover ? Theme.primary-hover : transparent;
+                    HorizontalLayout {
+                        padding-left: 10px; padding-right: 10px;
+                        spacing: 6px;
+                        Text {
+                            text: opt;
+                            font-size: 13px;
+                            color: Theme.text;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Text {
+                            text: opt == root.value ? "\u{E73E}" : "";
+                            font-family: "Segoe MDL2 Assets";
+                            font-size: 11px;
+                            color: Theme.primary;
+                            vertical-alignment: center;
+                        }
+                    }
+                    ot := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.selected(opt); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── 不透明度滑块（范围 min..max，拖动/点击发出目标值，由状态回流驱动）──
+component OpacitySlider inherits Rectangle {
+    in property <float> value: 0.85;
+    in property <float> minimum: 0.30;
+    in property <float> maximum: 1.0;
+    // 大于 0 时吸附到该步长的整数倍（用于「阶梯」而非连续的取值场景，
+    // 例如模糊度实际只有若干档视觉区分度，吸附能让拖动手感和效果一致）。
+    in property <float> step: 0;
+    callback value-changed(float);
+    width: 188px;
+    height: 24px;
+
+    pure function raw-value(mx: length) -> float {
+        clamp(root.minimum + (root.maximum - root.minimum) * (mx - 8px) / (root.width - 16px), root.minimum, root.maximum)
+    }
+    function apply(mx: length) {
+        root.value-changed(root.step > 0
+            ? clamp(round(root.raw-value(mx) / root.step) * root.step, root.minimum, root.maximum)
+            : root.raw-value(mx));
+    }
+
+    // 轨道
+    Rectangle {
+        x: 8px;
+        y: parent.height / 2 - 2px;
+        width: parent.width - 16px;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.dark ? rgba(255, 255, 255, 0.14) : rgba(0, 0, 0, 0.10);
+        Rectangle {
+            x: 0px; y: 0px;
+            height: parent.height;
+            width: parent.width * (root.value - root.minimum) / (root.maximum - root.minimum);
+            border-radius: 2px;
+            background: Theme.primary;
+        }
+    }
+    // 滑块手柄
+    Rectangle {
+        x: 8px + (root.width - 16px) * (root.value - root.minimum) / (root.maximum - root.minimum) - 8px;
+        y: parent.height / 2 - 8px;
+        width: 16px; height: 16px;
+        border-radius: 8px;
+        background: white;
+        border-width: 2px;
+        border-color: Theme.primary;
+        drop-shadow-blur: 4px;
+        drop-shadow-color: rgba(0, 0, 0, 0.20);
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        moved => { root.apply(self.mouse-x); }
+        pointer-event(ev) => {
+            if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.down) {
+                root.apply(self.mouse-x);
+            }
+        }
+    }
+}
+
+// ── 按钮（次要 / 主操作）──
+component Btn inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    in property <length> box-w: 0px;
+    callback clicked;
+    height: 32px;
+    width: box-w > 0px ? box-w : self.min-width;
+    border-radius: 8px;
+    background: primary
+        ? (touch.has-hover ? #1183de : Theme.primary)
+        : (touch.has-hover
+            ? (Theme.dark ? rgba(255, 255, 255, 0.12) : rgba(0, 0, 0, 0.08))
+            : (Theme.dark ? rgba(255, 255, 255, 0.08) : rgba(0, 0, 0, 0.05)));
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        Text {
+            text: root.label;
+            font-size: 12px;
+            color: primary ? #ffffff : Theme.text;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// ── 快捷键徽标 ──
+component Kbd inherits Rectangle {
+    in property <string> text;
+    height: 24px;
+    border-radius: 6px;
+    background: Theme.dark ? rgba(255, 255, 255, 0.06) : rgba(0, 0, 0, 0.05);
+    border-width: 1px;
+    border-color: Theme.border;
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        Text {
+            text: root.text;
+            font-size: Theme.fs-tiny;
+            color: Theme.muted;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// ── 卡片分组（可选标题 + 子内容）──
+component Card inherits Rectangle {
+    in property <string> title;
+    background: Theme.surface.with-alpha(Theme.card-alpha);
+    border-width: 1px;
+    border-color: Theme.border;
+    border-radius: 14px;
+    VerticalLayout {
+        spacing: 0px;
+        if root.title != "": Rectangle {
+            height: 44px;
+            Rectangle { x: 0px; y: parent.height - 1px; width: parent.width; height: 1px; background: Theme.border; }
+            HorizontalLayout {
+                padding-left: 16px; padding-right: 16px;
+                Text {
+                    text: root.title;
+                    font-size: 15px; font-weight: 700;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        @children
+    }
+}
+
+// ── 设置行（名称 + 副描述 + 右侧控件槽）──
+component SettingRow inherits Rectangle {
+    in property <string> name;
+    in property <string> desc;
+    in property <bool> last: false;
+    min-height: 56px;
+    Rectangle {
+        x: 0px; y: parent.height - 1px;
+        width: parent.width;
+        height: last ? 0px : 1px;
+        background: rgba(35, 55, 75, 0.07);
+    }
+    HorizontalLayout {
+        padding: 10px; padding-left: 16px; padding-right: 16px;
+        spacing: 18px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 3px;
+            Text { text: root.name; font-size: 13px; font-weight: 600; color: Theme.text; }
+            if root.desc != "": Text { text: root.desc; font-size: 12px; color: Theme.muted; }
+        }
+        @children
+    }
+}
+
+// ── 快捷键行 ──
+component ShortcutRow inherits Rectangle {
+    in property <string> action;
+    in property <string> keys;
+    in property <bool> last: false;
+    height: 42px;
+    Rectangle {
+        x: 0px; y: parent.height - 1px;
+        width: parent.width;
+        height: last ? 0px : 1px;
+        background: rgba(35, 55, 75, 0.07);
+    }
+    HorizontalLayout {
+        padding-left: 16px; padding-right: 16px;
+        spacing: 10px;
+        Text {
+            text: root.action;
+            font-size: 13px;
+            color: Theme.text;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        VerticalLayout {
+            alignment: center;
+            Kbd { text: root.keys; }
+        }
+    }
+}
+
+// ── 主题三选一卡片 ──
+component ThemeChip inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected: false;
+    in property <length> box-w: 72px;
+    callback clicked;
+    width: box-w; height: 32px;
+    border-radius: 8px;
+    background: selected ? Theme.primary : (Theme.dark ? rgba(255, 255, 255, 0.07) : rgba(0, 0, 0, 0.05));
+    Text {
+        text: root.label;
+        font-size: 11px;
+        color: selected ? #ffffff : Theme.muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+// ── 分区标题 ──
+component SectionTitle inherits Text {
+    font-size: 25px;
+    font-weight: 700;
+    color: Theme.text;
+}
+
+// ════════════════ 全屏设置面板 ════════════════
+export component SettingsPanel inherits Rectangle {
+    in-out property <string> current-section: "general";
+
+    width: 100%;
+    height: 100%;
+    background: Theme.bg.with-alpha(Theme.panel-alpha);
+
+    HorizontalLayout {
+        spacing: 0px;
+
+        // 左侧导航
+        Rectangle {
+            width: 196px;
+            background: Theme.surface-2.with-alpha(Theme.panel-alpha);
+            Rectangle { x: parent.width - 1px; width: 1px; height: parent.height; background: Theme.border; }
+
+            VerticalLayout {
+                padding: 16px;
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 1px;
+                alignment: start;
+
+                Rectangle {
+                    height: 36px;
+                    HorizontalLayout {
+                        padding-left: 9px;
+                        Text { text: "设置"; font-size: 16px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
+                    }
+                }
+
+                SettingsNavItem { label: "常规"; glyph: "\u{E713}"; active: current-section == "general"; clicked => { current-section = "general"; } }
+                SettingsNavItem { label: "外观"; glyph: "\u{E771}"; active: current-section == "appearance"; clicked => { current-section = "appearance"; } }
+                SettingsNavItem { label: "文件夹"; glyph: "\u{E8B7}"; active: current-section == "folders"; clicked => { current-section = "folders"; } }
+                SettingsNavItem { label: "标签页与面板"; glyph: "\u{E737}"; active: current-section == "tabs"; clicked => { current-section = "tabs"; } }
+                SettingsNavItem { label: "快捷键"; glyph: "\u{E765}"; active: current-section == "shortcuts"; clicked => { current-section = "shortcuts"; } }
+                SettingsNavItem { label: "搜索与索引"; glyph: "\u{E721}"; active: current-section == "search"; clicked => { current-section = "search"; } }
+                SettingsNavItem { label: "云存储账号"; glyph: "\u{E753}"; active: current-section == "cloud"; clicked => { current-section = "cloud"; } }
+                SettingsNavItem { label: "关于"; glyph: "\u{E946}"; active: current-section == "about"; clicked => { current-section = "about"; } }
+            }
+        }
+
+        // 右侧内容（可滚动）
+        content := Rectangle {
+            horizontal-stretch: 1;
+            clip: true;
+
+            Flickable {
+                width: parent.width;
+                height: parent.height;
+                viewport-height: max(inner.preferred-height, parent.height);
+
+                inner := VerticalLayout {
+                    padding: 22px;
+                    spacing: 16px;
+                    alignment: start;
+
+                    // ── 常规 ──
+                    if current-section == "general": VerticalLayout {
+                        spacing: 16px;
+                        SectionTitle { text: "常规"; }
+
+                        Card {
+                            title: "启动与行为";
+                            SettingRow {
+                                name: "开机启动";
+                                desc: "登录 Windows 后自动启动 FerroxPlorer";
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: AppState.set-launch-startup;
+                                    toggled(v) => { AppState.set-bool("launch-startup", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "启动时打开";
+                                desc: "可选择快速访问, 上次标签页或自定义路径";
+                                VerticalLayout { alignment: center; Dropdown {
+                                    value: AppState.set-startup-open;
+                                    options: ["快速访问", "上次的标签页", "此电脑"];
+                                    selected(v) => { AppState.set-string("startup-open", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "单击打开文件夹";
+                                desc: "启用后单击文件夹即可进入";
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: AppState.set-single-click;
+                                    toggled(v) => { AppState.set-bool("single-click", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "设为默认文件管理器";
+                                desc: "双击文件夹与 Win+E 将打开本应用, 每次打开新窗口 (仅修改当前用户注册表, 关闭即恢复资源管理器)";
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: AppState.set-default-fm;
+                                    toggled(v) => { AppState.set-bool("default-fm", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "语言";
+                                desc: "默认使用简体中文, 其他语言可手动切换";
+                                last: true;
+                                VerticalLayout { alignment: center; Dropdown {
+                                    value: AppState.set-language;
+                                    options: ["简体中文", "English"];
+                                    selected(v) => { AppState.set-string("language", v); }
+                                } }
+                            }
+                        }
+
+                        Card {
+                            title: "更新";
+                            SettingRow {
+                                name: "检查更新";
+                                desc: "当前版本 0.1.0";
+                                last: true;
+                                VerticalLayout { alignment: center; Btn { label: "立即检查更新"; } }
+                            }
+                        }
+                    }
+
+                    // ── 外观 ──
+                    if current-section == "appearance": VerticalLayout {
+                        spacing: 16px;
+                        SectionTitle { text: "外观"; }
+
+                        Card {
+                            title: "主题";
+                            SettingRow {
+                                name: "主题模式";
+                                desc: "跟随系统, 亮色或暗色";
+                                VerticalLayout {
+                                    alignment: center;
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        ThemeChip { label: "跟随系统"; selected: Theme.theme-mode == "system"; clicked => { AppState.set-string("theme-mode", "system"); } }
+                                        ThemeChip { label: "亮色"; box-w: 52px; selected: Theme.theme-mode == "light"; clicked => { AppState.set-string("theme-mode", "light"); } }
+                                        ThemeChip { label: "暗色"; box-w: 52px; selected: Theme.theme-mode == "dark"; clicked => { AppState.set-string("theme-mode", "dark"); } }
+                                    }
+                                }
+                            }
+                            SettingRow {
+                                name: "主题色";
+                                desc: "影响选中, 按钮, 焦点与进度状态. 点击取色板可自定义颜色";
+                                VerticalLayout {
+                                    alignment: center;
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        ColorSwatch { swatch-color: #0078d4; selected: Theme.accent-key == "blue"; clicked => { AppState.set-string("accent", "blue"); } }
+                                        ColorSwatch { swatch-color: #7442bd; selected: Theme.accent-key == "purple"; clicked => { AppState.set-string("accent", "purple"); } }
+                                        ColorSwatch { swatch-color: #107c10; selected: Theme.accent-key == "green"; clicked => { AppState.set-string("accent", "green"); } }
+                                        ColorSwatch { swatch-color: #d13438; selected: Theme.accent-key == "red"; clicked => { AppState.set-string("accent", "red"); } }
+                                        ColorSwatch { swatch-color: #ff8c00; selected: Theme.accent-key == "orange"; clicked => { AppState.set-string("accent", "orange"); } }
+                                        // 自定义取色板：显示当前自定义色，右下角画笔角标提示可点击打开系统取色器
+                                        ColorSwatch {
+                                            swatch-color: Theme.accent-custom;
+                                            selected: Theme.accent-key == "custom";
+                                            is-picker: true;
+                                            clicked => { AppState.request-color-pick(); }
+                                        }
+                                    }
+                                }
+                            }
+                            SettingRow {
+                                name: "文件图标来源";
+                                desc: "系统图标: 读取 Windows 系统图标 (含侧边栏); 内置图标: 使用应用内矢量图标";
+                                VerticalLayout { alignment: center; Dropdown {
+                                    value: AppState.set-icon-source;
+                                    options: ["系统图标", "内置图标"];
+                                    selected(v) => { AppState.set-string("icon-source", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "紧凑模式";
+                                desc: "降低行高和间距, 适合高密度文件列表";
+                                last: true;
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: Theme.compact;
+                                    toggled(v) => { AppState.set-bool("compact", v); }
+                                } }
+                            }
+                        }
+
+                        Card {
+                            title: "半透明 (毛玻璃)";
+                            SettingRow {
+                                name: "启用半透明";
+                                desc: "让窗口与所有面板呈现统一的毛玻璃质感";
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: Theme.translucent;
+                                    toggled(v) => { AppState.set-bool("translucent", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "不透明度";
+                                desc: "半透明时窗面的基础不透明程度 (30% – 100%), 与「模糊度」相互独立";
+                                VerticalLayout {
+                                    alignment: center;
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        Text {
+                                            text: "\{round(Theme.opacity-level * 100)}%";
+                                            font-size: 13px;
+                                            color: Theme.muted;
+                                            vertical-alignment: center;
+                                            width: 38px;
+                                            horizontal-alignment: right;
+                                        }
+                                        OpacitySlider {
+                                            value: Theme.opacity-level;
+                                            value-changed(v) => { AppState.set-number("opacity", v); }
+                                        }
+                                    }
+                                }
+                            }
+                            SettingRow {
+                                name: "模糊度";
+                                desc: "磨砂浓度分 6 档调节, 与「不透明度」相互独立. 档位越高磨砂越浓 (但始终留有透光, 不会糊成一片纯色); 最低档为不模糊的清透玻璃";
+                                last: true;
+                                VerticalLayout {
+                                    alignment: center;
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        Text {
+                                            text: "\{round(Theme.blur-level / 6)}/5";
+                                            font-size: 13px;
+                                            color: Theme.muted;
+                                            vertical-alignment: center;
+                                            width: 38px;
+                                            horizontal-alignment: right;
+                                        }
+                                        OpacitySlider {
+                                            value: Theme.blur-level;
+                                            minimum: 0;
+                                            maximum: 30;
+                                            step: 6;
+                                            value-changed(v) => { AppState.set-number("blur", v); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── 文件夹 ──
+                    if current-section == "folders": VerticalLayout {
+                        spacing: 16px;
+                        SectionTitle { text: "文件夹"; }
+
+                        Card {
+                            title: "显示";
+                            SettingRow {
+                                name: "显示隐藏文件";
+                                desc: "显示以点开头或带隐藏属性的项目";
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: AppState.set-show-hidden;
+                                    toggled(v) => { AppState.set-bool("show-hidden", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "显示文件扩展名";
+                                desc: "始终显示已知文件类型的扩展名";
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: AppState.set-show-ext;
+                                    toggled(v) => { AppState.set-bool("show-ext", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "显示系统受保护文件";
+                                desc: "显示操作系统标记为受保护的文件 (谨慎)";
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: AppState.set-show-protected;
+                                    toggled(v) => { AppState.set-bool("show-protected", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "计算文件夹大小";
+                                desc: "在详细视图中递归统计文件夹占用空间";
+                                last: true;
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: AppState.set-calc-size;
+                                    toggled(v) => { AppState.set-bool("calc-size", v); }
+                                } }
+                            }
+                        }
+
+                        Card {
+                            title: "默认视图";
+                            SettingRow {
+                                name: "默认视图模式";
+                                desc: "新打开文件夹时使用的视图";
+                                VerticalLayout { alignment: center; Dropdown {
+                                    value: AppState.set-default-view;
+                                    options: ["详细信息", "网格", "双面板"];
+                                    selected(v) => { AppState.set-string("default-view", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "默认排序方式";
+                                desc: "新文件夹的默认排序字段";
+                                VerticalLayout { alignment: center; Dropdown {
+                                    value: AppState.set-default-sort;
+                                    options: ["名称", "大小", "修改日期", "类型"];
+                                    selected(v) => { AppState.set-string("default-sort", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "文件夹优先";
+                                desc: "排序时始终把文件夹排在文件之前";
+                                last: true;
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: AppState.set-folders-first;
+                                    toggled(v) => { AppState.set-bool("folders-first", v); }
+                                } }
+                            }
+                        }
+
+                        Card {
+                            title: "右键菜单";
+                            SettingRow {
+                                name: "使用系统右键菜单";
+                                desc: "开启后右键弹出 Windows 原生菜单 (含第三方选项); 关闭则使用应用内置菜单";
+                                last: true;
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: AppState.set-context-menu-system;
+                                    toggled(v) => { AppState.set-bool("context-menu-system", v); }
+                                } }
+                            }
+                        }
+                    }
+
+                    // ── 标签页与面板 ──
+                    if current-section == "tabs": VerticalLayout {
+                        spacing: 16px;
+                        SectionTitle { text: "标签页与面板"; }
+
+                        Card {
+                            title: "标签页";
+                            SettingRow {
+                                name: "恢复上次标签页";
+                                desc: "启动时还原关闭前打开的所有标签页";
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: AppState.set-restore-tabs;
+                                    toggled(v) => { AppState.set-bool("restore-tabs", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "关闭最后标签页时退出";
+                                desc: "关闭仅剩的标签页时一并退出应用";
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: AppState.set-exit-last-tab;
+                                    toggled(v) => { AppState.set-bool("exit-last-tab", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "新标签页默认位置";
+                                desc: "新建标签页时打开的目录";
+                                last: true;
+                                VerticalLayout { alignment: center; Dropdown {
+                                    value: AppState.set-new-tab-loc;
+                                    options: ["快速访问", "此电脑", "上次目录"];
+                                    selected(v) => { AppState.set-string("new-tab-loc", v); }
+                                } }
+                            }
+                        }
+
+                        Card {
+                            title: "面板";
+                            SettingRow {
+                                name: "默认显示详情面板";
+                                desc: "打开窗口时显示右侧详情/预览面板";
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: AppState.set-show-details-default;
+                                    toggled(v) => { AppState.set-bool("show-details-default", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "默认开启双面板";
+                                desc: "启动时进入左右双面板模式";
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: AppState.set-dual-default;
+                                    toggled(v) => { AppState.set-bool("dual-default", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "双面板分隔比例";
+                                desc: "左右面板的默认宽度比例";
+                                last: true;
+                                VerticalLayout { alignment: center; Dropdown {
+                                    value: AppState.set-split-ratio;
+                                    options: ["50% / 50%", "40% / 60%", "60% / 40%"];
+                                    selected(v) => { AppState.set-string("split-ratio", v); }
+                                } }
+                            }
+                        }
+                    }
+
+                    // ── 快捷键 ──
+                    if current-section == "shortcuts": VerticalLayout {
+                        spacing: 16px;
+                        SectionTitle { text: "快捷键"; }
+
+                        Card {
+                            title: "导航与标签页";
+                            ShortcutRow { action: "新建标签页"; keys: "Ctrl+T"; }
+                            ShortcutRow { action: "关闭标签页"; keys: "Ctrl+W"; }
+                            ShortcutRow { action: "刷新"; keys: "F5"; }
+                            ShortcutRow { action: "上级目录"; keys: "Backspace"; }
+                            ShortcutRow { action: "搜索"; keys: "Ctrl+F"; }
+                            ShortcutRow { action: "命令面板"; keys: "Ctrl+P"; last: true; }
+                        }
+
+                        Card {
+                            title: "文件操作";
+                            ShortcutRow { action: "复制"; keys: "Ctrl+C"; }
+                            ShortcutRow { action: "剪切"; keys: "Ctrl+X"; }
+                            ShortcutRow { action: "粘贴"; keys: "Ctrl+V"; }
+                            ShortcutRow { action: "全选"; keys: "Ctrl+A"; }
+                            ShortcutRow { action: "重命名"; keys: "F2"; }
+                            ShortcutRow { action: "新建文件夹"; keys: "Ctrl+Shift+N"; }
+                            ShortcutRow { action: "删除 (回收站)"; keys: "Delete"; }
+                            ShortcutRow { action: "属性"; keys: "Alt+Enter"; last: true; }
+                        }
+
+                        Card {
+                            title: "双面板";
+                            ShortcutRow { action: "拖到另一面板 (复制)"; keys: "拖动"; }
+                            ShortcutRow { action: "拖到另一面板 (移动)"; keys: "Ctrl + 拖动"; last: true; }
+                        }
+
+                        Card {
+                            title: "视图";
+                            ShortcutRow { action: "框选多个文件"; keys: "空白处拖动"; }
+                            ShortcutRow { action: "追加框选"; keys: "Ctrl + 拖动"; }
+                            ShortcutRow { action: "缩放图标大小"; keys: "Ctrl + 滚轮"; last: true; }
+                        }
+                    }
+
+                    // ── 搜索与索引 ──
+                    if current-section == "search": VerticalLayout {
+                        spacing: 16px;
+                        SectionTitle { text: "搜索与索引"; }
+
+                        Card {
+                            title: "搜索";
+                            SettingRow {
+                                name: "实时过滤";
+                                desc: "在 Omnibar 搜索模式下键入即过滤当前目录";
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: AppState.set-live-filter;
+                                    toggled(v) => { AppState.set-bool("live-filter", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "包含子文件夹";
+                                desc: "搜索时递归进入子目录";
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: AppState.set-search-subfolders;
+                                    toggled(v) => { AppState.set-bool("search-subfolders", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "区分大小写";
+                                desc: "搜索关键字匹配时区分英文大小写";
+                                last: true;
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: AppState.set-case-sensitive;
+                                    toggled(v) => { AppState.set-bool("case-sensitive", v); }
+                                } }
+                            }
+                        }
+
+                        Card {
+                            title: "索引";
+                            SettingRow {
+                                name: "启用后台索引";
+                                desc: "后台建立全文索引以加速深层搜索";
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: AppState.set-background-index;
+                                    toggled(v) => { AppState.set-bool("background-index", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "索引位置";
+                                desc: "参与索引的根目录范围";
+                                VerticalLayout { alignment: center; Dropdown {
+                                    value: AppState.set-index-location;
+                                    options: ["用户目录", "全部磁盘", "自定义"];
+                                    selected(v) => { AppState.set-string("index-location", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "重建索引";
+                                desc: "清除并重新建立全部索引数据";
+                                last: true;
+                                VerticalLayout { alignment: center; Btn { label: "重建索引"; } }
+                            }
+                        }
+                    }
+
+                    // ── 云存储账号 ──
+                    if current-section == "cloud": VerticalLayout {
+                        spacing: 16px;
+                        SectionTitle { text: "云存储账号"; }
+
+                        Card {
+                            title: "已连接账号";
+                            SettingRow {
+                                name: "OneDrive";
+                                desc: "已连接 · user@example.com";
+                                VerticalLayout { alignment: center; Btn { label: "管理"; } }
+                            }
+                            SettingRow {
+                                name: "阿里云 OSS";
+                                desc: "未连接";
+                                VerticalLayout { alignment: center; Btn { label: "连接"; } }
+                            }
+                            SettingRow {
+                                name: "WebDAV (坚果云等)";
+                                desc: "未连接";
+                                last: true;
+                                VerticalLayout { alignment: center; Btn { label: "连接"; } }
+                            }
+                        }
+
+                        Card {
+                            title: "";
+                            SettingRow {
+                                name: "添加云存储账号";
+                                desc: "支持 OneDrive, 阿里云 OSS, 腾讯 COS, S3, WebDAV, SFTP";
+                                last: true;
+                                VerticalLayout { alignment: center; Btn { label: "添加账号"; primary: true; } }
+                            }
+                        }
+                    }
+
+                    // ── 关于 ──
+                    if current-section == "about": VerticalLayout {
+                        spacing: 16px;
+                        SectionTitle { text: "关于"; }
+                        Card {
+                            title: "";
+                            VerticalLayout {
+                                alignment: center; spacing: 12px;
+                                padding: 32px;
+                                Text { text: "FerroxPlorer"; font-size: 24px; font-weight: 700; color: Theme.text; horizontal-alignment: center; }
+                                Text { text: "版本 0.1.0"; font-size: 14px; color: Theme.muted; horizontal-alignment: center; }
+                                Text { text: "现代化桌面文件管理器\nRust + Slint 实现"; font-size: 13px; color: Theme.muted; horizontal-alignment: center; }
+                                Text { text: "© 2026 FerroxPlorer\n基于 MIT 许可证开源"; font-size: 12px; color: Theme.subtle; horizontal-alignment: center; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

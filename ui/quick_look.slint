@@ -1,0 +1,181 @@
+import { Theme } from "theme.slint";
+import { AppState } from "globals.slint";
+import { FileIcon } from "file_icon.slint";
+import { ScrollView } from "std-widgets.slint";
+
+// 空格键 Quick Look 预览浮层，类 macOS「快速查看」。
+// 居中卡片：顶部标题栏 + 中部按 ql-kind 切换的内容区。
+// 图标优先使用条目的真实缩略图/系统图标（ql-thumb），配色随主题（含深色）。
+// 关闭：点击遮罩、再次按空格或 Esc（键由 main.slint 的 FocusScope 处理）。
+export component QuickLook inherits Rectangle {
+    visible: AppState.quicklook-open;
+
+    // 半透明遮罩：点击关闭
+    Rectangle {
+        background: #12223455;
+        TouchArea { clicked => { AppState.close-quicklook(); } }
+    }
+
+    // 预览卡片
+    Rectangle {
+        width: 640px;
+        height: 560px;
+        border-radius: Theme.radius-dialog;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+        drop-shadow-blur: 48px;
+        drop-shadow-color: #1c304a55;
+        clip: true;
+        // 吞掉卡片内部点击，避免穿透到遮罩导致误关
+        TouchArea {}
+
+        VerticalLayout {
+            // 头部：图标 + 名称 + 副标题 + 关闭按钮
+            Rectangle {
+                height: 64px;
+                HorizontalLayout {
+                    padding: 14px;
+                    padding-left: 18px;
+                    spacing: 12px;
+                    FileIcon {
+                        icon-class: AppState.ql-icon-class;
+                        thumb: AppState.ql-thumb;
+                        has-thumb: AppState.ql-has-thumb;
+                        box: 36px;
+                        radius: 9px;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: AppState.ql-name;
+                            font-size: 15px;
+                            font-weight: 700;
+                            color: Theme.text;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: AppState.ql-subtitle;
+                            font-size: Theme.fs-small;
+                            color: Theme.muted;
+                            overflow: elide;
+                        }
+                    }
+                    // 关闭按钮（MDL2 图标，与标题栏风格一致）
+                    Rectangle {
+                        width: 30px; height: 30px;
+                        y: 4px;
+                        border-radius: 8px;
+                        background: closebtn.has-hover ? Theme.primary-hover : transparent;
+                        Text {
+                            text: "\u{E711}";
+                            font-family: "Segoe MDL2 Assets";
+                            font-size: 12px;
+                            color: closebtn.has-hover ? Theme.primary : Theme.muted;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        closebtn := TouchArea { clicked => { AppState.close-quicklook(); } }
+                    }
+                }
+                Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
+            }
+
+            // 内容区（次级表面色，深浅主题自适应）
+            Rectangle {
+                vertical-stretch: 1;
+                background: Theme.surface-2;
+                clip: true;
+
+                // 图片预览（ql-kind == 1）
+                if AppState.ql-kind == 1: Rectangle {
+                    if AppState.ql-has-image: Image {
+                        width: parent.width - 24px;
+                        height: parent.height - 24px;
+                        source: AppState.ql-image;
+                        image-fit: contain;
+                    }
+                    if !AppState.ql-has-image: Text {
+                        text: "正在生成预览…";
+                        font-size: Theme.fs-body;
+                        color: Theme.muted;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // 文本预览（ql-kind == 2）
+                if AppState.ql-kind == 2: ScrollView {
+                    VerticalLayout {
+                        padding: 16px;
+                        Text {
+                            text: AppState.ql-text;
+                            font-size: Theme.fs-small;
+                            font-family: "Consolas";
+                            color: Theme.text;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                // 文件夹（3）/ 其它信息（0）：大图标衬底 + 名称 + 信息行
+                if AppState.ql-kind == 0 || AppState.ql-kind == 3: VerticalLayout {
+                    alignment: center;
+                    spacing: 14px;
+                    HorizontalLayout {
+                        alignment: center;
+                        // 图标衬底：柔和圆角底板，突出主体
+                        Rectangle {
+                            width: 132px;
+                            height: 132px;
+                            border-radius: 24px;
+                            background: Theme.surface.with-alpha(Theme.dark ? 0.35 : 0.75);
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            FileIcon {
+                                icon-class: AppState.ql-icon-class;
+                                thumb: AppState.ql-thumb;
+                                has-thumb: AppState.ql-has-thumb;
+                                box: 96px;
+                                radius: 18px;
+                                x: (parent.width - 96px) / 2;
+                                y: (parent.height - 96px) / 2;
+                            }
+                        }
+                    }
+                    Text {
+                        text: AppState.ql-name;
+                        font-size: 16px;
+                        font-weight: 700;
+                        color: Theme.text;
+                        horizontal-alignment: center;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: AppState.ql-info;
+                        font-size: Theme.fs-body;
+                        color: Theme.muted;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            // 底部提示
+            Rectangle {
+                height: 38px;
+                background: Theme.surface;
+                Rectangle { y: 0; height: 1px; background: Theme.border; }
+                Text {
+                    text: "按 空格 或 Esc 关闭预览";
+                    font-size: Theme.fs-tiny;
+                    color: Theme.muted;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

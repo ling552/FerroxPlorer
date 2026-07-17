@@ -1,0 +1,222 @@
+// 统一输入层：覆盖在 ListView（列表/网格）之上，集中处理指针输入。
+// 之所以需要它：标准 ListView 内部是 Flickable，会吞掉空白处的按下/拖动与滚轮事件，
+// 使得"背景 TouchArea 接收空白拖动框选"无法实现。故在 ListView 之上铺一层 TouchArea，
+// 通过几何换算自行完成：单击选中 / 双击打开 / 右键菜单 / 空白拖动框选 / 跨面板拖拽 /
+// Ctrl+滚轮缩放 / 普通滚轮滚动（手动驱动 viewport-y）。
+// 重命名进行中（editing-index>=0）时本层禁用，事件回落到 ListView 内的输入框。
+import { Theme } from "theme.slint";
+import { AppState } from "globals.slint";
+
+export component InputOverlay inherits TouchArea {
+    in property <string> pane: "left";   // "left" / "right"
+    in property <string> mode: "list";    // "list" / "grid"
+    in property <int> count;               // 条目总数
+    in property <int> cols: 1;             // 网格列数（列表恒为 1）
+    in property <length> row-h;            // 行高（列表）/ 行步距（网格：卡片高 + 行距）
+    in property <length> cell-w: 0px;      // 网格卡片宽度（用于排除卡片间空隙的命中）
+    in property <length> pitch-x: 1px;     // 网格水平步距（卡片宽 + 列距）
+    in property <length> top-pad: 0px;     // 内容顶部留白
+    in property <length> left-pad: 0px;    // 内容左侧留白
+    in-out property <length> vp-y;         // 与 ListView.viewport-y 双向绑定（负值=已下滚）
+    in property <length> vp-h;             // 内容总高（viewport-height）
+    in property <length> vis-h;            // 可视高（visible-height）
+    callback request-context-menu(int, length, length);
+
+    // 鼠标悬停的条目下标（供行/卡片绘制 hover 高亮）；按下/框选/拖拽时不计算
+    out property <int> hover-idx: (self.has-hover && !root.box-active && !root.dragging)
+        ? root.hit-idx(self.mouse-x, self.mouse-y) : -1;
+
+    // 框选状态（本层本地坐标）
+    property <bool> box-active: false;
+    property <length> box-x0;
+    property <length> box-y0;
+    property <length> box-x1;
+    property <length> box-y1;
+    // 跨面板拖拽状态
+    property <bool> dragging: false;
+    // 按下信息
+    property <length> press-x;
+    property <length> press-y;
+    property <int> press-idx: -1;
+    property <bool> press-empty: false;
+    property <bool> press-ctrl: false;
+
+    // 任一面板处于行内重命名时禁用，事件回落到 ListView 内的输入框
+    enabled: AppState.editing-index < 0 && AppState.r-editing-index < 0;
+    mouse-cursor: pointer;
+
+    // ── 几何换算（无局部变量，借助纯函数组合）──
+    pure function content-y(ly: length) -> length { ly - root.vp-y - root.top-pad }
+    pure function row-of(ly: length) -> int { floor(root.content-y(ly) / root.row-h) }
+    pure function col-of(lx: length) -> int {
+        root.mode == "grid" ? floor((lx - root.left-pad) / root.pitch-x) : 0
+    }
+    // 命中下标，-1 表示空白
+    pure function hit-idx(lx: length, ly: length) -> int {
+        if (root.content-y(ly) < 0px) { return -1; }
+        if (root.mode == "grid" && (lx - root.left-pad) < 0px) { return -1; }
+        if (root.col-of(lx) < 0 || root.col-of(lx) >= root.cols) { return -1; }
+        if (root.mode == "grid"
+            && ((lx - root.left-pad) - root.col-of(lx) * root.pitch-x) > root.cell-w) { return -1; }
+        if (root.row-of(ly) < 0) { return -1; }
+        if (root.row-of(ly) * root.cols + root.col-of(lx) >= root.count) { return -1; }
+        return root.row-of(ly) * root.cols + root.col-of(lx);
+    }
+
+    // ── 选择/打开/菜单（按面板路由）──
+    function do-select(idx: int, ctrl: bool) {
+        if (root.pane == "left") {
+            AppState.select-entry(idx, ctrl);
+        } else {
+            AppState.set-active-pane("right");
+            AppState.r-select-entry(idx);
+        }
+    }
+    function do-clear() {
+        if (root.pane == "left") { AppState.clear-selection(); }
+        else { AppState.set-active-pane("right"); AppState.r-clear-selection(); }
+    }
+    function do-open(idx: int) {
+        if (root.pane == "left") { AppState.open-entry(idx); }
+        else { AppState.r-open-entry(idx); }
+    }
+    // 实时应用框选（矩形子区 → 行/列范围）
+    function apply-box() {
+        if (root.pane == "left") {
+            AppState.box-select(
+                max(0, root.row-of(min(root.box-y0, root.box-y1))),
+                root.row-of(max(root.box-y0, root.box-y1)),
+                root.mode == "grid" ? max(0, root.col-of(min(root.box-x0, root.box-x1))) : 0,
+                root.mode == "grid" ? min(root.cols - 1, root.col-of(max(root.box-x0, root.box-x1))) : 0,
+                root.cols, root.press-ctrl);
+        } else {
+            AppState.r-box-select(
+                max(0, root.row-of(min(root.box-y0, root.box-y1))),
+                root.row-of(max(root.box-y0, root.box-y1)),
+                root.mode == "grid" ? max(0, root.col-of(min(root.box-x0, root.box-x1))) : 0,
+                root.mode == "grid" ? min(root.cols - 1, root.col-of(max(root.box-x0, root.box-x1))) : 0,
+                root.cols, root.press-ctrl);
+        }
+    }
+
+    double-clicked => {
+        if (root.hit-idx(self.mouse-x, self.mouse-y) >= 0) {
+            root.do-open(root.hit-idx(self.mouse-x, self.mouse-y));
+        }
+    }
+
+    moved => {
+        // 越过 6px 阈值后决定行为：空白处→框选；条目上且双面板→跨面板拖拽
+        if (!root.dragging && !root.box-active
+            && (self.mouse-x - root.press-x > 6px || root.press-x - self.mouse-x > 6px
+                || self.mouse-y - root.press-y > 6px || root.press-y - self.mouse-y > 6px)) {
+            if (root.press-empty) {
+                root.box-active = true;
+                root.box-x0 = root.press-x;
+                root.box-y0 = root.press-y;
+                root.box-x1 = self.mouse-x;
+                root.box-y1 = self.mouse-y;
+            } else if (AppState.dual-pane && root.press-idx >= 0) {
+                root.dragging = true;
+                root.do-select(root.press-idx, false);
+                AppState.pane-drag-source = root.pane;
+                AppState.pane-drag-label = root.pane == "left"
+                    ? AppState.entries[root.press-idx].name
+                    : AppState.r-entries[root.press-idx].name;
+                AppState.pane-drag-active = true;
+            }
+        }
+        if (root.box-active) {
+            root.box-x1 = self.mouse-x;
+            root.box-y1 = self.mouse-y;
+            root.apply-box();
+        }
+        if (root.dragging) {
+            AppState.pane-drag-x = self.absolute-position.x + self.mouse-x;
+            AppState.pane-drag-y = self.absolute-position.y + self.mouse-y;
+        }
+    }
+
+    pointer-event(ev) => {
+        if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.down) {
+            root.press-x = self.mouse-x;
+            root.press-y = self.mouse-y;
+            root.press-ctrl = ev.modifiers.control;
+            root.press-idx = root.hit-idx(self.mouse-x, self.mouse-y);
+            root.press-empty = root.press-idx < 0;
+            root.dragging = false;
+            root.box-active = false;
+        }
+        if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.up) {
+            if (root.dragging) {
+                // 跨面板放下：源=左则落点须越过分隔线进入右面板，反之亦然
+                if (root.pane == "left"
+                    && (self.absolute-position.x + self.mouse-x) > AppState.pane-split-x) {
+                    AppState.pane-drop("left", ev.modifiers.control);
+                }
+                if (root.pane == "right"
+                    && (self.absolute-position.x + self.mouse-x) < AppState.pane-split-x) {
+                    AppState.pane-drop("right", ev.modifiers.control);
+                }
+                AppState.pane-drag-active = false;
+                AppState.pane-drag-source = "";
+            } else if (!root.box-active) {
+                // 纯点击（无拖动）：命中条目→选中；空白→清除选择。
+                // 注意：行内重命名进行中本层已被禁用（见 enabled），点击不会到达这里；
+                // 退出编辑由 Enter/Escape、面板切换（set-active-pane）或目录刷新驱动。
+                if (root.press-idx >= 0) {
+                    root.do-select(root.press-idx, ev.modifiers.control);
+                } else {
+                    root.do-clear();
+                }
+            }
+            root.dragging = false;
+            root.box-active = false;
+        }
+        // 右键：选中并弹出菜单（仅左面板有上下文菜单）。
+        if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) {
+            if (root.hit-idx(self.mouse-x, self.mouse-y) >= 0) {
+                // 右键未选中项则单选（已选中项之一则保持多选）；左右按各自模型判断
+                if (root.pane == "left") {
+                    if (!AppState.entries[root.hit-idx(self.mouse-x, self.mouse-y)].selected) {
+                        root.do-select(root.hit-idx(self.mouse-x, self.mouse-y), false);
+                    }
+                } else {
+                    if (!AppState.r-entries[root.hit-idx(self.mouse-x, self.mouse-y)].selected) {
+                        root.do-select(root.hit-idx(self.mouse-x, self.mouse-y), false);
+                    }
+                }
+                root.request-context-menu(root.hit-idx(self.mouse-x, self.mouse-y),
+                    self.mouse-x, self.mouse-y);
+            } else {
+                // 空白处右键：清除选择并弹出背景菜单（target=-1，显示新建/粘贴/刷新）
+                root.do-clear();
+                root.request-context-menu(-1, self.mouse-x, self.mouse-y);
+            }
+        }
+    }
+
+    scroll-event(ev) => {
+        if (ev.modifiers.control) {
+            // Ctrl + 滚轮：缩放图标（双面板因共用全局而自动同步），随后持久化
+            AppState.icon-scale = clamp(AppState.icon-scale + (ev.delta-y > 0 ? 0.1 : -0.1), 0.7, 2.0);
+            AppState.set-number("icon-scale", AppState.icon-scale);
+            return accept;
+        }
+        // 普通滚轮：手动驱动 viewport-y（本层拦截了滚轮，ListView 不再自行滚动）
+        root.vp-y = clamp(root.vp-y + ev.delta-y, min(0px, root.vis-h - root.vp-h), 0px);
+        return accept;
+    }
+
+    // 框选矩形：半透明主题色填充 + 主题色描边
+    if root.box-active: Rectangle {
+        x: min(root.box-x0, root.box-x1);
+        y: min(root.box-y0, root.box-y1);
+        width: max(root.box-x0, root.box-x1) - min(root.box-x0, root.box-x1);
+        height: max(root.box-y0, root.box-y1) - min(root.box-y0, root.box-y1);
+        background: Theme.primary.with-alpha(0.16);
+        border-width: 1px;
+        border-color: Theme.primary.with-alpha(0.6);
+        border-radius: 2px;
+    }
+}

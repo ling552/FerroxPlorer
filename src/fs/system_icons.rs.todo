@@ -1,0 +1,131 @@
+//! Windows 系统图标提取：通过 SHDefExtractIconW 拿到 HICON，转换为 RGBA 字节。
+//!
+//! 用于"文件图标来源 = 系统图标"模式：列表行/网格中显示 Windows 资源管理器
+//! 给该文件/扩展名关联的真实图标（来自注册表），而不是内置 SVG 矢量。
+//!
+//! 实现步骤：
+//! 1. SHDefExtractIconW 取 HICON
+//! 2. GetIconInfo 拿颜色位图（hbmColor）+ 掩码（hbmMask）
+//! 3. GetDIBits 把 hbmColor 读成 32 位 BGRA 字节
+//! 4. BGRA → RGBA 转换（Slint 要求 RGBA 字节序）
+
+#![cfg(windows)]
+
+use std::path::Path;
+use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::Graphics::Gdi::{
+    BitBlt, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SelectObject,
+    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, SRCCOPY,
+};
+use windows_sys::Win32::Storage::Xps;
+use windows_sys::Win32::UI::Shell::SHDefExtractIconW;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CreateIconIndirect, DestroyIcon, DrawIconEx, GetIconInfo, HICON, ICONINFO,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{DI_NORMAL, HDC};
+
+/// 提取文件/文件夹的系统图标，返回 RGBA 字节（每像素 4 字节）。
+/// 失败（无扩展名关联、权限拒绝等）返回 None，由调用方 fallback 到内置 SVG。
+/// `size_px` 通常取 32（list 用 16/18，grid 用 58/32 都按 32 提取再缩放）。
+pub fn extract_icon_rgba(path: &Path, size_px: u32) -> Option<(Vec<u8>, u32, u32)> {
+    unsafe {
+        let path_w: Vec<u16> = path
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+
+        // 步骤 1：SHDefExtractIconW 取 HICON（索引 0 即可，第一个图标即系统关联）
+        let mut icon_large: isize = 0;
+        let mut icon_small: isize = 0;
+        let hr = SHDefExtractIconW(
+            path_w.as_ptr(),
+            0,
+            0,
+            &mut icon_large,
+            &mut icon_small,
+            0,
+        );
+        // SHDefExtractIconW 成功返回 S_OK（0）
+        if hr != 0 || icon_large == 0 {
+            return None;
+        }
+        let hicon = icon_large as HICON;
+
+        // 步骤 2：在内存 DC 上画图标，再读像素（避免直接处理 ICONINFO 颜色位图格式）
+        let screen_dc = GetDC(HWND(std::ptr::null_mut()));
+        if screen_dc.is_null() {
+            DestroyIcon(hicon);
+            return None;
+        }
+        let mem_dc = CreateCompatibleDC(screen_dc);
+        if mem_dc.is_null() {
+            ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+            DestroyIcon(hicon);
+            return None;
+        }
+
+        // 步骤 3：创建目标位图（32x32，32 位 BGRA）
+        use windows_sys::Win32::Graphics::Gdi::{CreateBitmap, CreateCompatibleBitmap};
+        let target_hbmp = CreateCompatibleBitmap(screen_dc, size_px as i32, size_px as i32);
+        if target_hbmp.is_null() {
+            DeleteDC(mem_dc);
+            ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+            DestroyIcon(hicon);
+            return None;
+        }
+        let prev_obj = SelectObject(mem_dc, target_hbmp);
+
+        // 步骤 4：DrawIconEx 把 HICON 画到 mem_dc（DI_NORMAL = 正常绘制，背景透明）
+        let _ = DrawIconEx(
+            mem_dc,
+            0,
+            0,
+            hicon,
+            size_px as i32,
+            size_px as i32,
+            0,
+            std::ptr::null_mut(),
+            DI_NORMAL,
+        );
+
+        // 步骤 5：GetDIBits 读出 BGRA
+        let mut bmi: BITMAPINFO = std::mem::zeroed();
+        bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        bmi.bmiHeader.biWidth = size_px as i32;
+        bmi.bmiHeader.biHeight = -(size_px as i32); // 负值 = 顶向下
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB.0 as u32;
+        bmi.bmiHeader.biSizeImage = 0;
+
+        let mut bits: Vec<u8> = vec![0u8; (size_px * size_px * 4) as usize];
+        let lines = GetDIBits(
+            mem_dc,
+            target_hbmp,
+            0,
+            size_px as u32,
+            bits.as_mut_ptr() as *mut _,
+            &mut bmi,
+            DIB_RGB_COLORS,
+        );
+
+        // 清理 GDI 句柄
+        SelectObject(mem_dc, prev_obj);
+        let _ = DeleteObject(target_hbmp);
+        DeleteDC(mem_dc);
+        ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+        DestroyIcon(hicon);
+
+        if lines == 0 {
+            return None;
+        }
+
+        // 步骤 6：BGRA → RGBA（Slint Image 要求 R 在前）
+        // 顶向下扫描行（biHeight 负值已经保证），每像素 4 字节：B,G,R,A → R,G,B,A
+        for chunk in bits.chunks_exact_mut(4) {
+            chunk.swap(0, 2); // B ↔ R
+        }
+        Some((bits, size_px, size_px))
+    }
+}

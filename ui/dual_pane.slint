@@ -1,0 +1,128 @@
+// 双面板视图：左右两个独立的文件浏览面板。
+// 导航统一由公用顶部工具栏驱动（按 AppState.active-pane 路由到对应面板），
+// 面板内不再各自携带导航头部，以节省纵向空间。
+// 左面板绑定当前活动标签（entries 等），右面板绑定独立的 r-* 状态。
+// 中间分隔条可拖拽调整左右占比（AppState.dual-ratio）。
+// 当前活动面板使用主题色边框标识；两侧面板均带圆角。
+import { Theme } from "theme.slint";
+import { AppState } from "globals.slint";
+import { FileGrid } from "file_grid.slint";
+import { FileList } from "file_list.slint";
+import { RightPane } from "right_pane.slint";
+import { VSplitter } from "splitter.slint";
+
+export component DualPane inherits Rectangle {
+    callback request-context-menu(int, length, length);
+
+    background: Theme.surface.with-alpha(Theme.panel-alpha);
+
+    HorizontalLayout {
+        padding: 4px;
+        spacing: 0px;
+
+        // 左面板：当前活动标签，内容随共享 view-mode 渲染
+        left-panel := Rectangle {
+            // 8px = 左右外边距 4px×2；再减分隔条 8px
+            width: (root.width - 8px - 8px) * clamp(AppState.dual-ratio, 0.15, 0.85);
+            border-radius: Theme.radius-card;
+            border-width: 2px;
+            border-color: AppState.active-pane == "left" ? Theme.primary : Theme.border;
+            // 半透明时大幅减淡面板底色（避免白板压壁纸），深色主题跟随 surface
+            background: Theme.surface.with-alpha(Theme.translucent ? 0.16 : 0.52);
+            clip: true;
+            // 维护左右面板分隔的窗口 x 坐标（左面板右缘），供跨面板拖拽判定落点归属
+            changed width => { AppState.pane-split-x = self.absolute-position.x + self.width; }
+
+            // 点击面板任意空白区即激活左面板
+            activate-touch := TouchArea {
+                clicked => { AppState.set-active-pane("left"); }
+            }
+
+            Rectangle {
+                if AppState.view-mode == "grid": Rectangle {
+                    VerticalLayout {
+                        padding: 6px;
+                        FileGrid {
+                            framed: false;
+                            request-context-menu(idx, mx, my) => {
+                                AppState.set-active-pane("left");
+                                // 10px = 内边距 6px + 外层 padding 4px
+                                root.request-context-menu(idx, mx + 10px, my + 10px);
+                            }
+                        }
+                    }
+                }
+                if AppState.view-mode != "grid": Rectangle {
+                    VerticalLayout {
+                        padding: 6px;
+                        FileList {
+                            framed: false;
+                            request-context-menu(idx, mx, my) => {
+                                AppState.set-active-pane("left");
+                                // x: 内边距 6 + 外层 4；y 另加表头行高 + 1px 分隔线
+                                // （FileList 的 InputOverlay 原点在表头之下）
+                                root.request-context-menu(idx, mx + 10px, my + 10px + Theme.row-h + 1px);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 比例分隔条（可拖拽调整左右占比）
+        VSplitter {
+            dragged(dx) => {
+                AppState.dual-ratio = clamp(AppState.dual-ratio + dx / (root.width - 8px - 8px), 0.15, 0.85);
+            }
+            committed => {
+                AppState.save-dual-ratio(AppState.dual-ratio);
+            }
+        }
+
+        // 右面板：独立历史 / 文件列表（共享 view-mode 布局）
+        right-panel := Rectangle {
+            horizontal-stretch: 1;
+            border-radius: Theme.radius-card;
+            border-width: 2px;
+            border-color: AppState.active-pane == "right" ? Theme.primary : Theme.border;
+            background: Theme.surface.with-alpha(Theme.translucent ? 0.13 : 0.45);
+            clip: true;
+
+            r-activate-touch := TouchArea {
+                clicked => { AppState.set-active-pane("right"); }
+            }
+
+            RightPane {
+                request-context-menu(idx, mx, my) => {
+                    AppState.set-active-pane("right");
+                    // x：内边距 6 + 分隔条 8 + 外层 padding 4 = 18；y：内边距 6 + 外层 4 = 10
+                    // （Slint 边框绘制在元素内部，不产生子元素位移）
+                    root.request-context-menu(idx, mx + left-panel.width + 18px, my + 10px);
+                }
+            }
+        }
+    }
+
+    // 跨面板拖拽提示（幽灵）：跟随指针，显示被拖条目名。坐标为窗口绝对值，
+    // 转换为 DualPane 局部坐标后定位（root.absolute-position 为本组件窗口偏移）
+    if AppState.pane-drag-active: Rectangle {
+        x: AppState.pane-drag-x - root.absolute-position.x + 12px;
+        y: AppState.pane-drag-y - root.absolute-position.y + 10px;
+        width: ghost-label.preferred-width + 20px;
+        height: 28px;
+        border-radius: 6px;
+        background: Theme.primary;
+        opacity: 0.92;
+        drop-shadow-blur: 12px;
+        drop-shadow-offset-y: 2px;
+        drop-shadow-color: #00000040;
+        ghost-label := Text {
+            x: 10px;
+            text: AppState.pane-drag-label;
+            font-size: Theme.fs-small;
+            color: #ffffff;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}

@@ -1,0 +1,293 @@
+import { Theme } from "theme.slint";
+import { AppState, Crumb } from "globals.slint";
+import { LineEdit } from "std-widgets.slint";
+
+// 圆角图标按钮（使用 Segoe MDL2 Assets 图标字体，避免几何符号在中文字体下显示为方框）
+component IconBtn inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> active: false;
+    in property <bool> disabled: false;
+    callback clicked;
+    width: 36px;
+    height: 36px;
+    border-radius: Theme.radius-btn;
+    background: active
+        ? Theme.primary-soft
+        : (touch.has-hover && !disabled ? Theme.primary-hover : transparent);
+    opacity: disabled ? 0.35 : 1.0;
+    Text {
+        text: glyph;
+        font-family: "Segoe MDL2 Assets";
+        font-size: 15px;
+        color: active ? Theme.primary : Theme.text;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        enabled: !disabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component Toolbar inherits Rectangle {
+    height: Theme.toolbar-h;
+    background: Theme.shell.with-alpha(Theme.panel-alpha);
+
+    // 双面板下当前活动面板为右侧时，工具栏导航/地址栏切换到右面板状态显示与路由
+    property <bool> right-active: AppState.dual-pane && AppState.active-pane == "right";
+    property <[Crumb]> cur-crumbs: root.right-active ? AppState.r-crumbs : AppState.crumbs;
+    property <bool> cur-can-back: root.right-active ? AppState.r-can-back : AppState.can-back;
+    property <bool> cur-can-forward: root.right-active ? AppState.r-can-forward : AppState.can-forward;
+
+    HorizontalLayout {
+        padding: 8px;
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 12px;
+
+        // 左侧导航组
+        HorizontalLayout {
+            spacing: 6px;
+            IconBtn {
+                glyph: "\u{E72B}";   // Back 后退
+                disabled: !root.cur-can-back;
+                clicked => { AppState.go-back(); }
+            }
+            IconBtn {
+                glyph: "\u{E72A}";   // Forward 前进
+                disabled: !root.cur-can-forward;
+                clicked => { AppState.go-forward(); }
+            }
+            IconBtn {
+                glyph: "\u{E74A}";   // Up 上级
+                clicked => { AppState.go-up(); }
+            }
+        }
+
+        // 中央 Omnibar
+        omni := Rectangle {
+            min-height: 40px;
+            horizontal-stretch: 1;
+            border-radius: Theme.radius-card;
+            border-width: 1px;
+            border-color: Theme.border;
+            background: Theme.surface;
+
+            // 路径模式：面包屑（点击空白处进入编辑模式）
+            if AppState.omni-mode == "path": Rectangle {
+                // 底层：点击空白区域进入路径编辑（面包屑分段的 TouchArea 在其上层优先）
+                path-edit-touch := TouchArea {
+                    mouse-cursor: text;
+                    clicked => { AppState.set-omni-mode("edit"); }
+                }
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 0px;
+                    alignment: start;
+                    for crumb[i] in root.cur-crumbs: HorizontalLayout {
+                        spacing: 0px;
+                        crumb-seg := Rectangle {
+                            border-radius: 7px;
+                            background: seg-touch.has-hover ? Theme.primary-soft : transparent;
+                            HorizontalLayout {
+                                padding: 5px;
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                Text {
+                                    text: crumb.name;
+                                    font-size: 14px;
+                                    color: #2b4058;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            seg-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { AppState.navigate(crumb.path); }
+                            }
+                        }
+                        if i < root.cur-crumbs.length - 1: Text {
+                            text: " › ";
+                            color: Theme.subtle;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // 编辑路径模式：内联可输入绝对路径（无边框，避免双框）
+            if AppState.omni-mode == "edit": HorizontalLayout {
+                padding-left: 12px; padding-right: 12px;
+                path-input := TextInput {
+                    text: root.cur-crumbs.length > 0 ? root.cur-crumbs[root.cur-crumbs.length - 1].path : "";
+                    font-size: 14px;
+                    color: Theme.text;
+                    single-line: true;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    init => {
+                        self.focus();
+                        self.select-all();
+                    }
+                    edited => {
+                        AppState.request-path-completion(self.text);
+                    }
+                    accepted => {
+                        // > 命令模式：执行选中命令；否则提交路径导航
+                        if (AppState.omni-cmd-mode && AppState.palette-commands.length > 0) {
+                            AppState.palette-run(AppState.palette-commands[min(AppState.omni-cmd-selected, AppState.palette-commands.length - 1)].action);
+                        } else {
+                            AppState.commit-path(self.text);
+                        }
+                        AppState.set-omni-mode("path");
+                    }
+                    key-pressed(ev) => {
+                        // > 命令模式：上下箭头选择命令
+                        if (AppState.omni-cmd-mode && AppState.palette-commands.length > 0) {
+                            if (ev.text == Key.UpArrow) {
+                                AppState.omni-cmd-selected = max(0, AppState.omni-cmd-selected - 1);
+                                return accept;
+                            }
+                            if (ev.text == Key.DownArrow) {
+                                AppState.omni-cmd-selected = min(AppState.palette-commands.length - 1, AppState.omni-cmd-selected + 1);
+                                return accept;
+                            }
+                        }
+                        if (ev.text == Key.Escape) {
+                            AppState.set-omni-mode("path");
+                            return accept;
+                        }
+                        return reject;
+                    }
+                    changed has-focus => {
+                        if (!self.has-focus) {
+                            AppState.set-omni-mode("path");
+                        }
+                    }
+                }
+            }
+
+            // 搜索模式
+            if AppState.omni-mode == "search": HorizontalLayout {
+                padding-left: 12px; padding-right: 8px;
+                spacing: 6px;
+                Text { text: "\u{E721}"; font-family: "Segoe MDL2 Assets"; font-size: 15px; color: Theme.muted; vertical-alignment: center; }
+                search-edit := LineEdit {
+                    placeholder-text: "搜索当前目录…";
+                    text: AppState.search-text;
+                    edited(t) => { AppState.do-search(t); }
+                }
+                clear-touch := TouchArea {
+                    width: 28px;
+                    clicked => {
+                        AppState.do-search("");
+                        AppState.set-omni-mode("path");
+                    }
+                    Text { text: "\u{E711}"; font-family: "Segoe MDL2 Assets"; font-size: 13px; color: Theme.muted; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+
+            // 路径/命令补全浮层：edit 模式有候选时弹出在地址栏下方
+            if AppState.omni-mode == "edit" && (AppState.omni-cmd-mode ? AppState.palette-commands.length > 0 : AppState.path-completions.length > 0):
+                Rectangle {
+                    y: parent.height + 4px;
+                    width: parent.width;
+                    height: min((AppState.omni-cmd-mode ? AppState.palette-commands.length : AppState.path-completions.length) * 34px + 12px, 300px);
+                    border-radius: Theme.radius-card;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    background: Theme.surface;
+                    drop-shadow-blur: 20px;
+                    drop-shadow-color: rgba(0, 0, 0, 0.18);
+                    clip: true;
+
+                    comp-scroll := Flickable {
+                        width: 100%;
+                        height: 100%;
+                        viewport-height: comp-list.preferred-height;
+
+                        comp-list := VerticalLayout {
+                            padding: 6px;
+                            spacing: 2px;
+
+                            // > 命令模式：渲染命令列表
+                            if AppState.omni-cmd-mode: VerticalLayout {
+                                spacing: 2px;
+                                for cmd[i] in AppState.palette-commands: Rectangle {
+                                    height: 32px;
+                                    border-radius: 6px;
+                                    background: i == AppState.omni-cmd-selected ? Theme.primary-soft : (cmd-touch.has-hover ? Theme.primary-hover : transparent);
+                                    HorizontalLayout {
+                                        padding-left: 10px; padding-right: 10px; spacing: 8px;
+                                        Text { text: cmd.icon; font-family: "Segoe MDL2 Assets"; font-size: 13px; color: Theme.text; vertical-alignment: center; width: 22px; }
+                                        Text { text: cmd.title; font-size: 13px; color: Theme.text; vertical-alignment: center; horizontal-stretch: 1; }
+                                    }
+                                    cmd-touch := TouchArea {
+                                        clicked => {
+                                            AppState.palette-run(cmd.action);
+                                            AppState.set-omni-mode("path");
+                                        }
+                                        pointer-event(e) => {
+                                            if (e.kind == PointerEventKind.move) { AppState.omni-cmd-selected = i; }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 路径补全模式：渲染候选子项
+                            if !AppState.omni-cmd-mode: VerticalLayout {
+                                spacing: 2px;
+                                for c[i] in AppState.path-completions: Rectangle {
+                                    height: 32px;
+                                    border-radius: 6px;
+                                    background: path-touch.has-hover ? Theme.primary-hover : transparent;
+                                    HorizontalLayout {
+                                        padding-left: 10px; padding-right: 10px; spacing: 8px;
+                                        Text { text: c.name; font-size: 13px; color: Theme.text; vertical-alignment: center; horizontal-stretch: 1; }
+                                        Text { text: c.path; font-size: 11px; color: Theme.muted; vertical-alignment: center; overflow: elide; }
+                                    }
+                                    path-touch := TouchArea {
+                                        clicked => {
+                                            AppState.commit-path(c.path);
+                                            AppState.set-omni-mode("path");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+        }
+
+        // 右侧功能组
+        HorizontalLayout {
+            spacing: 6px;
+            IconBtn { glyph: "\u{E72C}"; clicked => { AppState.refresh(); } }   // Refresh 刷新
+            IconBtn {
+                glyph: "\u{E721}";   // Search 搜索
+                active: AppState.omni-mode == "search";
+                clicked => { AppState.set-omni-mode(AppState.omni-mode == "search" ? "path" : "search"); }
+            }
+            IconBtn {
+                glyph: "\u{E80A}";   // Tiles 网格视图
+                active: AppState.view-mode == "grid";
+                clicked => { AppState.set-view("grid"); }
+            }
+            IconBtn {
+                glyph: "\u{EA37}";   // List 列表视图
+                active: AppState.view-mode == "list";
+                clicked => { AppState.set-view("list"); }
+            }
+            IconBtn {
+                glyph: "\u{F0E2}";   // DualScreen 双面板（与网格/列表布局正交，可叠加）
+                active: AppState.dual-pane;
+                clicked => { AppState.toggle-dual(); }
+            }
+            IconBtn {
+                glyph: "\u{E90D}";   // DockRight 详情面板
+                active: AppState.show-details;
+                clicked => { AppState.toggle-details(); }
+            }
+        }
+    }
+}

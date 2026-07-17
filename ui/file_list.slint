@@ -1,0 +1,528 @@
+import { Theme } from "theme.slint";
+import { AppState, FileEntry } from "globals.slint";
+import { FileIcon } from "file_icon.slint";
+import { RenameEdit } from "rename_edit.slint";
+import { InputOverlay } from "input_overlay.slint";
+import { ListView } from "std-widgets.slint";
+
+// 可点击排序的列标题（仿 Windows 资源管理器：每个固定列的左边界一条分隔线，
+// 拖动该线即调整这一列的宽度——"拖某列左边那条线就改某列"，与用户直觉一致）
+// 固定列额外支持按住标题水平拖拽以重新排序（与点击排序通过 4px 移动阈值区分）
+component head-cell inherits Rectangle {
+    in property <string> text;
+    in property <string> key;
+    // >0 固定宽度，=0 自适应拉伸（名称列）
+    in property <length> fixed-w: 0px;
+    // 左缩进：用于让"名称"标题与行内图标后的文字对齐
+    in property <length> indent: 0px;
+    // 右对齐：用于"大小"列与行内右对齐数值保持一致
+    in property <bool> align-right: false;
+    // 是否参与拖拽排序（固定列）
+    in property <bool> draggable: false;
+    // 本列当前是否处于拖拽中（由父级回告，用于半透明/阴影视觉）
+    in property <bool> dragging: false;
+    // 列宽拖拽（仅固定列）：开始（父级记基准宽）/ 累计位移（相对按下点）/ 结束（持久化）
+    callback resize-started();
+    callback resize-delta(length);
+    callback resize-ended();
+    // 排序拖拽：开始 / 移动（相对按下点的位移）/ 结束
+    callback drag-started();
+    callback drag-moved(length);
+    callback drag-ended();
+    // 仅固定宽度列可调整
+    property <bool> resizable: root.fixed-w > 0px;
+    // 是否已越过拖拽阈值（区分"点击排序"与"拖拽排序"）
+    property <bool> drag-on: false;
+
+    // 拖拽中本体隐藏并冻结在拖起位置：TouchArea 坐标系保持静止，
+    // mouse-x - pressed-x 才是稳定的绝对位移（若本体跟随鼠标会形成反馈振荡，
+    // 把相邻列拖着来回交换）；视觉由顶层半透明幽灵接管
+    opacity: root.dragging ? 0 : 1.0;
+    animate opacity { duration: 100ms; easing: ease-out; }
+
+    HorizontalLayout {
+        // 表头文字左缩进与行数据严格一致：名称列用 indent 对齐图标后文字，
+        // 其余列 indent=0、零缩进，与行内 Text 的左缘逐像素对齐（分隔线已移至右边界，不再有 z-order 冲突）
+        padding-left: root.indent;
+        Text {
+            text: root.text + (AppState.sort-key == root.key ? (AppState.sort-asc ? " ↑" : " ↓") : "");
+            font-size: Theme.fs-small;
+            color: Theme.muted;
+            font-weight: 700;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            horizontal-alignment: root.align-right ? right : left;
+        }
+    }
+
+    // 排序点击 + 排序拖拽区：可调整列让出最右 8px 给列宽手柄，二者物理隔离
+    TouchArea {
+        x: 0px;
+        width: root.resizable ? parent.width - 8px : parent.width;
+        mouse-cursor: pointer;
+        moved => {
+            if (root.draggable) {
+                // 越过阈值才进入拖拽，避免误吞点击排序
+                if (!root.drag-on && (self.mouse-x - self.pressed-x > 4px || self.pressed-x - self.mouse-x > 4px)) {
+                    root.drag-on = true;
+                    root.drag-started();
+                }
+                if (root.drag-on) {
+                    root.drag-moved(self.mouse-x - self.pressed-x);
+                }
+            }
+        }
+        pointer-event(ev) => {
+            if (ev.kind == PointerEventKind.up && ev.button == PointerEventButton.left) {
+                if (root.drag-on) {
+                    root.drag-on = false;
+                    root.drag-ended();
+                } else if (self.has-hover) {
+                    AppState.sort-by(root.key);
+                }
+            }
+        }
+    }
+
+    // 右边界：常驻分隔线 + 拖拽手柄。列左锚定，故拖右边界调整「本列」宽度：
+    // 光标右移→本列变宽（dx 取正），符号为 (mouse-x - 中心)。本列变宽只把右侧
+    // 兄弟列向右推、并吞掉尾部留白，左侧列与名称列恒不动——实现「各列独立」。
+    if root.resizable: Rectangle {
+        // 手柄跨在分隔线两侧（列右缘=本块 local 8px），左 8px 在列内、右 8px 探入列间距，
+        // 让用户瞄准可见分隔线时无论偏左偏右都能抓到（之前手柄贴在列内、贴边难抓）
+        x: parent.width - 8px;
+        width: 16px;
+        // 分隔线（常驻，居中于列右缘=本块 local 8px；hover/拖拽时加粗加高高亮）
+        Rectangle {
+            width: rz.has-hover || rz.pressed ? 2px : 1px;
+            x: 8px - self.width / 2;
+            height: parent.height * (rz.has-hover || rz.pressed ? 0.7 : 0.5);
+            y: (parent.height - self.height) / 2;
+            background: rz.has-hover || rz.pressed ? Theme.primary : Theme.border;
+            animate width, background, height { duration: 100ms; easing: ease-out; }
+        }
+        rz := TouchArea {
+            x: 0px;
+            width: 16px;
+            mouse-cursor: ew-resize;
+            // 按下点（相对本 TouchArea 原点），用于把每帧 mouse-x 换算为相对按下的累计位移
+            property <length> press-x: 0px;
+            moved => {
+                root.resize-delta(self.mouse-x - self.press-x);
+            }
+            pointer-event(ev) => {
+                if (ev.button == PointerEventButton.left) {
+                    if (ev.kind == PointerEventKind.down) {
+                        self.press-x = self.mouse-x;
+                        root.resize-started();
+                    } else if (ev.kind == PointerEventKind.up) {
+                        root.resize-ended();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// 详细信息视图，对照 design_ref 的 .list-view
+export component FileList inherits Rectangle {
+    callback request-context-menu(int, length, length);
+    // 是否绘制列表外框：单面板视图为 true；双面板内嵌时为 false（由面板卡片提供外框）
+    in property <bool> framed: true;
+    border-radius: root.framed ? 12px : 0px;
+    border-width: root.framed ? 1px : 0px;
+    border-color: Theme.border;
+    background: root.framed ? Theme.surface.with-alpha(Theme.panel-alpha) : transparent;
+    clip: true;
+
+    // 列宽（表头与行严格共享 AppState 属性，保证逐像素对齐；可拖拽并持久化）
+    property <length> col-mod: AppState.col-modified-w;   // 修改日期
+    property <length> col-kind: AppState.col-kind-w;      // 类型
+    property <length> col-size: AppState.col-size-w;      // 大小
+    property <length> pad: 12px;        // 行左右内边距
+    property <length> gap: 12px;        // 列间距
+
+    // 图标缩放（Ctrl+滚轮）：行高、行内图标、名称缩进随之缩放，表头维持原高度
+    property <length> icon-box: 18px * AppState.icon-scale;
+    property <length> name-indent: root.icon-box + 8px;   // 名称文字左缘 = 图标宽 + 间距
+    property <length> scaled-row-h: Theme.row-h * AppState.icon-scale;
+
+    // 列宽拖拽基准：按下手柄瞬间记录被拖列的原始宽度，移动时以「基准 + 累计位移」
+    // 绝对设值（而非每帧累加），避免位移被反复累加导致列宽爆走。
+    // 列在恒宽固定块内左锚定：拖宽某列只把它右侧的兄弟列推向右、吞掉尾部留白，
+    // 左侧列与名称列恒不动——即「单独控制每列、不牵动其它列」。
+    property <length> resize-base: 0px;
+
+    // ============ 列拖拽排序 ============
+    // 列号约定：0=修改日期 1=类型 2=大小；槽位（ord）为该列在固定块内的显示序号。
+    // 取消 swap 机制：拖动时只有被拖动列（幽灵）移动，其他列保持原位，
+    // 释放时根据碰撞检测出的目标槽位瞬间更新 ord，head-cell 通过 settling
+    // 动画从冻结位置滑向新位置，行内列同步滑动。
+    property <int> drag-col: -1;        // 正在拖拽的列号，-1 表示无
+    property <int> ghost-col: 0;        // 幽灵展示的列号（drag-end 后 settling 期间仍需引用）
+    property <bool> settling: false;    // 松手归位动画进行中（幽灵滑向落点，本体仍隐藏）
+    property <length> drag-dx: 0px;     // 相对按下点的位移（已夹紧）
+    property <length> drag-origin: 0px; // 拖起瞬间该列在固定块内的偏移
+    property <int> target-slot: 0;      // 拖动碰撞检测出的目标槽位，释放时用于更新 ord
+
+    // 归位动画结束后撤掉幽灵、本体淡入
+    Timer {
+        interval: 170ms;
+        running: root.settling;
+        triggered() => { root.settling = false; }
+    }
+    // 固定块总宽（3 列 + 2 个列间距）
+    property <length> block-w: root.col-mod + root.col-kind + root.col-size + 2 * root.gap;
+
+    // 行内列动画时长：仅在 settling 期间启用。空闲时为 0ms——既避免启动首帧
+    // 布局从 0 宽展开时列从左侧"飞入"，也让列宽调整即时跟手
+    // 拖动期间不启用：取消 swap 机制后，拖动中行内列的 x 不会变化，无需动画
+    pure function row-anim() -> duration {
+        root.settling ? 140ms : 0ms
+    }
+
+    pure function ord(c: int) -> int {
+        c == 0 ? AppState.col-modified-ord : (c == 1 ? AppState.col-kind-ord : AppState.col-size-ord)
+    }
+    pure function colw(c: int) -> length {
+        c == 0 ? root.col-mod : (c == 1 ? root.col-kind : root.col-size)
+    }
+    // 占据槽位 s 的列号
+    pure function col-at(s: int) -> int {
+        AppState.col-modified-ord == s ? 0 : (AppState.col-kind-ord == s ? 1 : 2)
+    }
+    pure function slotw(s: int) -> length { root.colw(root.col-at(s)) }
+    // 槽位 s 相对固定块起点的 x 偏移
+    pure function slotx(s: int) -> length {
+        s == 0 ? 0px : (s == 1 ? root.slotw(0) + root.gap : root.slotw(0) + root.slotw(1) + 2 * root.gap)
+    }
+    // 固定块占据的「常量宽度」区域（贴齐容器右侧）。区域宽度恒定，不随任一列宽变化，
+    // 因此 blockx 稳定——这是「拖某列不牵动其它列」的关键：列在该区域内左锚定，
+    // 拖宽某列只把它右侧的兄弟列（以及尾部留白）向右推，左侧列与名称列恒不动。
+    // 取值需 ≥ 三列上限之和 + 2 个列间距，保证列增长有留白吞吐而不溢出。
+    property <length> block-cap: 484px;
+    // 名称列最小宽度：窗口/左右栏过窄时名称列收缩到此值后不再让步
+    property <length> name-min: 140px;
+    // 固定块区域起点 x。常态下右缘贴齐 total - pad（宽度恒为 block-cap，故拖列宽时
+    // blockx 不变、左列与名称列不动）；但加下限 pad + name-min + gap 作保护：当中间区域
+    // 被左右栏挤窄、容纳不下「名称最小宽 + block-cap」时，固定块停在名称列右侧不再左移，
+    // 避免整块溢出盖住名称列文字（此时大小列可能被裁，属窗口过窄的必然取舍）。
+    pure function blockx(total: length) -> length {
+        max(root.pad + root.name-min + root.gap, total - root.pad - root.block-cap)
+    }
+    // 名称列宽度（自适应：吸收窗口宽度变化，与列宽解耦；下限即 name-min）
+    pure function namew(total: length) -> length { max(root.name-min, root.blockx(total) - root.pad - root.gap) }
+
+    function set-ord(c: int, s: int) {
+        if (c == 0) { AppState.col-modified-ord = s; }
+        else if (c == 1) { AppState.col-kind-ord = s; }
+        else { AppState.col-size-ord = s; }
+    }
+    // 取消 swap 机制：拖动时只更新目标槽位，不真正交换 ord，
+    // 其他列的 x 绑定保持原位（依赖 ord 的 slotx 不变）。
+    // 释放时再根据 target-slot 一次性更新 ord，所有相关列再走 settling 动画
+    function drag-start(c: int) {
+        root.drag-col = c;
+        root.ghost-col = c;
+        root.settling = false;
+        root.drag-dx = 0px;
+        root.drag-origin = root.slotx(root.ord(c));
+        root.target-slot = root.ord(c);
+    }
+    // 碰撞检测：向右拖时幽灵"右缘"越过右邻列中心、向左拖时"左缘"越过左邻列中心，
+    // 仅更新 target-slot（不交换 ord——其他列的 x 因此保持原位）。
+    // 用前缘而非中心判定：列宽不一致时，中心判定可能因位移夹紧而永远达不到阈值
+    function drag-move(c: int, dx: length) {
+        root.drag-dx = clamp(dx, -root.drag-origin, root.block-w - root.colw(c) - root.drag-origin);
+        if (root.ord(c) < 2
+            && root.drag-origin + root.drag-dx + root.colw(c)
+               > root.slotx(root.ord(c) + 1) + root.slotw(root.ord(c) + 1) / 2) {
+            root.target-slot = root.ord(c) + 1;
+        } else if (root.ord(c) > 0
+            && root.drag-origin + root.drag-dx
+               < root.slotx(root.ord(c) - 1) + root.slotw(root.ord(c) - 1) / 2) {
+            root.target-slot = root.ord(c) - 1;
+        } else {
+            root.target-slot = root.ord(c);
+        }
+    }
+    // 松开：先按 target-slot 一次性更新 ord（不交换的链式动画，因此其他列不"跟着动"），
+    // 然后进入 settling 阶段——幽灵从当前位置滑向新槽位，行内列同步滑入新位置
+    function drag-end() {
+        if (root.target-slot != root.ord(root.drag-col)) {
+            root.set-ord(root.drag-col, root.target-slot);
+        }
+        root.drag-col = -1;
+        root.drag-dx = 0px;
+        root.settling = true;
+    }
+
+    VerticalLayout {
+        // 列标题（绝对定位：x 由槽位计算，便于拖拽排序时做避让动画）
+        hdr := Rectangle {
+            height: Theme.row-h;
+            background: Theme.surface-2.with-alpha(Theme.panel-alpha);
+
+            head-cell {
+                x: root.pad;
+                width: root.namew(hdr.width);
+                height: 100%;
+                text: "名称"; key: "name"; indent: root.name-indent;
+            }
+            head-cell {
+                // 拖拽中本体冻结在拖起位置（不跟随鼠标、不随交换移动），
+                // 保证内部 TouchArea 坐标系静止、位移计算稳定；视觉由幽灵承担
+                x: root.drag-col == 0
+                    ? root.blockx(hdr.width) + root.drag-origin
+                    : root.blockx(hdr.width) + root.slotx(root.ord(0));
+                width: root.col-mod;
+                height: 100%;
+                text: "修改日期"; key: "modified"; fixed-w: root.col-mod;
+                draggable: true;
+                dragging: root.drag-col == 0 || (root.settling && root.ghost-col == 0);
+                drag-started => { root.drag-start(0); }
+                drag-moved(dx) => { root.drag-move(0, dx); }
+                drag-ended => { root.drag-end(); }
+                resize-started => { root.resize-base = AppState.col-modified-w; }
+                resize-delta(dx) => { AppState.col-modified-w = clamp(root.resize-base + dx, 80px, max(80px, root.block-cap - AppState.col-kind-w - AppState.col-size-w - 2 * root.gap)); }
+                resize-ended => { AppState.save-layout(AppState.sidebar-w, AppState.details-w, AppState.col-modified-w, AppState.col-kind-w, AppState.col-size-w); }
+            }
+            head-cell {
+                x: root.drag-col == 1
+                    ? root.blockx(hdr.width) + root.drag-origin
+                    : root.blockx(hdr.width) + root.slotx(root.ord(1));
+                width: root.col-kind;
+                height: 100%;
+                text: "类型"; key: "kind"; fixed-w: root.col-kind;
+                draggable: true;
+                dragging: root.drag-col == 1 || (root.settling && root.ghost-col == 1);
+                drag-started => { root.drag-start(1); }
+                drag-moved(dx) => { root.drag-move(1, dx); }
+                drag-ended => { root.drag-end(); }
+                resize-started => { root.resize-base = AppState.col-kind-w; }
+                resize-delta(dx) => { AppState.col-kind-w = clamp(root.resize-base + dx, 56px, max(56px, root.block-cap - AppState.col-modified-w - AppState.col-size-w - 2 * root.gap)); }
+                resize-ended => { AppState.save-layout(AppState.sidebar-w, AppState.details-w, AppState.col-modified-w, AppState.col-kind-w, AppState.col-size-w); }
+            }
+            head-cell {
+                x: root.drag-col == 2
+                    ? root.blockx(hdr.width) + root.drag-origin
+                    : root.blockx(hdr.width) + root.slotx(root.ord(2));
+                width: root.col-size;
+                height: 100%;
+                text: "大小"; key: "size"; fixed-w: root.col-size; align-right: true;
+                draggable: true;
+                dragging: root.drag-col == 2 || (root.settling && root.ghost-col == 2);
+                drag-started => { root.drag-start(2); }
+                drag-moved(dx) => { root.drag-move(2, dx); }
+                drag-ended => { root.drag-end(); }
+                resize-started => { root.resize-base = AppState.col-size-w; }
+                resize-delta(dx) => { AppState.col-size-w = clamp(root.resize-base + dx, 56px, max(56px, root.block-cap - AppState.col-modified-w - AppState.col-kind-w - 2 * root.gap)); }
+                resize-ended => { AppState.save-layout(AppState.sidebar-w, AppState.details-w, AppState.col-modified-w, AppState.col-kind-w, AppState.col-size-w); }
+            }
+
+            // 拖拽幽灵：声明在最后故而绘制于最上层（Slint 的 z 不能动态绑定），
+            // 半透明白底+阴影模拟"元素提升层级"。拖拽中跟随鼠标；松手后（settling）
+            // 以过渡动画滑向落点槽位，到位后由 Timer 撤掉、本体淡入
+            if root.drag-col >= 0 || root.settling: Rectangle {
+                x: root.drag-col >= 0
+                    ? root.blockx(hdr.width) + root.drag-origin + root.drag-dx
+                    : root.blockx(hdr.width) + root.slotx(root.ord(root.ghost-col));
+                width: root.colw(root.ghost-col);
+                height: 100%;
+                background: Theme.surface;
+                opacity: 0.75;
+                border-radius: 6px;
+                drop-shadow-blur: 12px;
+                drop-shadow-offset-y: 2px;
+                drop-shadow-color: #00000033;
+                animate x { duration: root.settling ? 140ms : 0ms; easing: ease-out; }
+                HorizontalLayout {
+                    Text {
+                        text: (root.ghost-col == 0 ? "修改日期" : (root.ghost-col == 1 ? "类型" : "大小"))
+                            + (AppState.sort-key == (root.ghost-col == 0 ? "modified" : (root.ghost-col == 1 ? "kind" : "size"))
+                                ? (AppState.sort-asc ? " ↑" : " ↓") : "");
+                        font-size: Theme.fs-small;
+                        color: Theme.muted;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        horizontal-alignment: root.ghost-col == 2 ? right : left;
+                    }
+                }
+            }
+        }
+        // 分隔线
+        Rectangle { height: 1px; background: Theme.border; }
+
+        // 行列表（固定列与表头同一套槽位坐标，拖拽排序时整列同步避让）。
+        // ListView 仅负责渲染与行虚拟化；所有指针交互由上方 InputOverlay 统一处理。
+        Rectangle {
+            vertical-stretch: 1;
+            list := ListView {
+                width: 100%;
+                height: 100%;
+                for entry[idx] in AppState.entries: row := Rectangle {
+                    height: root.scaled-row-h;
+                    background: entry.selected
+                        ? Theme.primary
+                        : (ov.hover-idx == idx ? #0078d414
+                            : (mod(idx, 2) == 1 ? Theme.row-stripe : transparent));
+
+                    // 名称列（自适应宽度，始终居首）。图标 y 显式垂直居中，
+                    // 文字左缘固定在 name-indent（图标宽 + 间距），与表头「名称」缩进逐像素对齐
+                    Rectangle {
+                        x: root.pad;
+                        width: root.namew(row.width);
+                        height: 100%;
+                        clip: true;
+                        FileIcon {
+                            x: 0px;
+                            y: (parent.height - self.height) / 2;
+                            icon-class: entry.icon-class;
+                            label: entry.icon-label;
+                            thumb: entry.thumb;
+                            has-thumb: entry.has-thumb;
+                            box: root.icon-box;
+                            radius: 5px;
+                            compact: true;
+                        }
+                        // 标签彩色点：图标右下角（多标签时取优先色 重要 > 待归档 > 已完成）
+                        Rectangle {
+                            width: 8px;
+                            height: 8px;
+                            border-radius: 4px;
+                            x: root.icon-box - 5px;
+                            y: (parent.height + root.icon-box) / 2 - 7px;
+                            visible: entry.tag-important || entry.tag-archive || entry.tag-done;
+                            background: entry.tag-important ? #d13438 : (entry.tag-archive ? #ff8c00 : #107c10);
+                            border-width: 1.5px;
+                            border-color: entry.selected ? Theme.primary : white;
+                        }
+                        // Git 状态徽章：图标右上角（M 橙 / ? 灰 / A 绿 / ! 红）
+                        if entry.git-status != "": Rectangle {
+                            width: 13px;
+                            height: 13px;
+                            border-radius: 4px;
+                            x: root.icon-box - 7px;
+                            y: (parent.height - root.icon-box) / 2 - 2px;
+                            border-width: 1.5px;
+                            border-color: entry.selected ? Theme.primary : white;
+                            background: entry.git-status == "?" ? #8a99aa
+                                : entry.git-status == "!" ? #d13438
+                                : entry.git-status == "A" ? #107c10
+                                : #ff8c00;
+                            Text {
+                                text: entry.git-status;
+                                color: white;
+                                font-size: 8px;
+                                font-weight: 800;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        if AppState.editing-index != idx: Text {
+                            x: root.name-indent;
+                            width: parent.width - root.name-indent;
+                            height: 100%;
+                            text: entry.name;
+                            font-size: Theme.fs-small;
+                            color: entry.selected ? #ffffff : Theme.text;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        if AppState.editing-index == idx: RenameEdit {
+                            x: root.name-indent;
+                            width: parent.width - root.name-indent;
+                            y: (parent.height - self.height) / 2;
+                            text: entry.name;
+                            // 按 Escape 退出重命名
+                            cancel => { AppState.editing-index = -1; }
+                            commit(t) => {
+                                AppState.rename-entry(idx, t);
+                                AppState.editing-index = -1;
+                            }
+                        }
+                    }
+                    // 修改日期
+                    Rectangle {
+                        x: root.blockx(row.width) + root.slotx(root.ord(0));
+                        width: root.col-mod;
+                        height: 100%;
+                        background: root.drag-col == 0 ? #0078d40d : transparent;
+                        animate x { duration: root.row-anim(); easing: ease-out; }
+                        Text {
+                            width: 100%;
+                            // 驱动器/便携设备没有有意义的修改日期，留空
+                            text: (entry.icon-class == "drive" || entry.icon-class == "device") ? "" : entry.modified;
+                            font-size: Theme.fs-small;
+                            color: entry.selected ? #ffffff : Theme.muted;
+                            vertical-alignment: center;
+                            horizontal-alignment: left;
+                            overflow: elide;
+                        }
+                    }
+                    // 类型
+                    Rectangle {
+                        x: root.blockx(row.width) + root.slotx(root.ord(1));
+                        width: root.col-kind;
+                        height: 100%;
+                        background: root.drag-col == 1 ? #0078d40d : transparent;
+                        animate x { duration: root.row-anim(); easing: ease-out; }
+                        Text {
+                            width: 100%;
+                            text: entry.kind;
+                            font-size: Theme.fs-small;
+                            color: entry.selected ? #ffffff : Theme.muted;
+                            vertical-alignment: center;
+                            horizontal-alignment: left;
+                            overflow: elide;
+                        }
+                    }
+                    // 大小（右对齐）
+                    Rectangle {
+                        x: root.blockx(row.width) + root.slotx(root.ord(2));
+                        width: root.col-size;
+                        height: 100%;
+                        background: root.drag-col == 2 ? #0078d40d : transparent;
+                        animate x { duration: root.row-anim(); easing: ease-out; }
+                        Text {
+                            width: 100%;
+                            // 驱动器在"大小"列显示总容量；其余目录留空、文件显示大小
+                            text: entry.icon-class == "drive" ? entry.size : (entry.is-dir ? "" : entry.size);
+                            font-size: Theme.fs-small;
+                            color: entry.selected ? #ffffff : Theme.muted;
+                            vertical-alignment: center;
+                            horizontal-alignment: right;
+                        }
+                    }
+                }
+            }
+            // 统一输入层：列表模式，单列
+            ov := InputOverlay {
+                width: 100%;
+                height: 100%;
+                pane: "left";
+                mode: "list";
+                count: AppState.entries.length;
+                cols: 1;
+                row-h: root.scaled-row-h;
+                left-pad: root.pad;
+                vp-y <=> list.viewport-y;
+                vp-h: list.viewport-height;
+                vis-h: list.visible-height;
+                request-context-menu(i, mx, my) => { root.request-context-menu(i, mx, my); }
+            }
+        }
+    }
+
+    // 插入点指示线：贯穿表头与列表，标记拖拽列当前将落位的槽位左边界
+    // 向左偏 7px（原本 -4px 调整为 -7px），避开目标槽位左邻列的列内文字右缘
+    if root.drag-col >= 0: Rectangle {
+        x: root.blockx(root.width) + root.slotx(root.ord(root.drag-col)) - 7px;
+        y: 0;
+        width: 2px;
+        height: root.height;
+        background: Theme.primary;
+        animate x { duration: 140ms; easing: ease-out; }
+    }
+}

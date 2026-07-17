@@ -1,0 +1,276 @@
+//! 文件图标：用 SVG Path 绘制的矢量图形，替代"圆角矩形+文字"的旧实现。
+//!
+//! 设计要点：
+//! 1. 每个分类（folder/image/code/archive/audio/video/pdf/default）都有专属图形
+//! 2. 大图标（box=58px）：彩色背景 + 白色/深色实心 path
+//! 3. 行内紧凑模式（compact=true，box≤22px）：背景透明 + 跟随主题文字色
+//!    这样无需背景填充也能在浅色/深色背景下清晰呈现
+
+import { Theme } from "theme.slint";
+
+// 单个矢量图标：白色填充（在大图标上叠在彩色背景上），紧凑模式下用主题文字色
+component Glyph inherits Path {
+    in property <string> d;
+    in property <brush> glyph-color: #ffffff;
+    fill: root.glyph-color;
+    commands: root.d;
+}
+
+// 文件夹：经典有标签的形状
+component FolderGlyph inherits Path {
+    fill: Theme.folder-fg;
+    commands: "M10 4 H4 C2.9 4 2 4.9 2 6 V18 C2 19.1 2.9 20 4 20 H20 C21.1 20 22 19.1 22 18 V8 C22 6.9 21.1 6 20 6 H12 L10 4 Z";
+}
+
+// 图片：外框 + 圆点（太阳）+ 山脉折线（用 fill-rule:evenodd 形成山脉镂空）
+component ImageGlyph inherits Path {
+    fill: #ffffff;
+    fill-rule: evenodd;
+    commands: "M3 3 H21 V21 H3 Z M16.5 9 a1.5 1.5 0 1 0 0 -3 a1.5 1.5 0 0 0 0 3 Z M5 17 L8.5 12.5 L11 15.5 L14 11.5 L19 17 Z";
+}
+
+// 代码：两个尖括号 < >
+component CodeGlyph inherits Path {
+    fill: Theme.code-fg;
+    commands: "M9.4 16.6 L4.8 12 L9.4 7.4 L8 6 L2 12 L8 18 L9.4 16.6 Z M14.6 16.6 L19.2 12 L14.6 7.4 L16 6 L22 12 L16 18 L14.6 16.6 Z";
+}
+
+// 压缩包：盒身 + 顶部拉链条 + 向下箭头
+component ArchiveGlyph inherits Path {
+    fill: Theme.archive-fg;
+    fill-rule: evenodd;
+    commands: "M3 6 L4.4 4.5 C4.78 4.07 5.35 3.84 5.94 3.84 H18.06 C18.65 3.84 19.22 4.07 19.6 4.5 L21 6 V19 C21 20.1 20.1 21 19 21 H5 C3.9 21 3 20.1 3 19 V6 Z M5.94 5.84 L6.75 4.84 H17.25 L18.06 5.84 H5.94 Z M12 17.5 L6.5 12 H10 V10 H14 V12 H17.5 L12 17.5 Z";
+}
+
+// 音乐：单音符 + 符尾
+component AudioGlyph inherits Path {
+    fill: #ffffff;
+    commands: "M12 3 V13.55 C11.41 13.21 10.73 13 10 13 C7.79 13 6 14.79 6 17 C6 19.21 7.79 21 10 21 C12.21 21 14 19.21 14 17 V7 H18 V3 H12 Z";
+}
+
+// 视频：方框 + 内部播放三角（用 evenodd 镂空）
+component VideoGlyph inherits Path {
+    fill: #ffffff;
+    fill-rule: evenodd;
+    commands: "M4 4 H20 V20 H4 Z M10 8 V16 L17 12 Z";
+}
+
+// 通用文档：带折角的纸张 + 三条横线（用 evenodd 镂空横线）
+component DocGlyph inherits Path {
+    fill: #ffffff;
+    fill-rule: evenodd;
+    commands: "M14 2 H6 C4.9 2 4 2.9 4 4 V20 C4 21.1 4.9 22 6 22 H18 C19.1 22 20 21.1 20 20 V8 L14 2 Z M14 2 V8 H20 M8 13 H16 M8 16 H16 M8 19 H13";
+}
+
+// PDF 文档：通用文档 + 左上角红色 PDF 角标
+component PdfGlyph inherits Rectangle {
+    in property <length> s;
+    width: s;
+    height: s;
+    Path {
+        x: 0; y: 0;
+        width: s; height: s;
+        fill: #ffffff;
+        fill-rule: evenodd;
+        commands: "M14 2 H6 C4.9 2 4 2.9 4 4 V20 C4 21.1 4.9 22 6 22 H18 C19.1 22 20 21.1 20 20 V8 L14 2 Z M14 2 V8 H20 M8 13 H16 M8 16 H16";
+    }
+    // 角标："P" 形剪裁（叠加在左上角的小红条带）
+    Path {
+        x: s * 0.10; y: s * 0.55;
+        width: s * 0.30; height: s * 0.20;
+        fill: #d13438;
+        commands: "M0 0 H6 V3 H2 V5 H5 V7 H2 V10 H0 Z";
+    }
+}
+
+// 驱动器：横向机箱主体 + 3 条数据槽（evenodd 挖空为背景色，表示存储介质）
+component DriveGlyph inherits Path {
+    fill: #ffffff;
+    fill-rule: evenodd;
+    commands: "M3 5 H21 C21.55 5 22 5.45 22 6 V18 C22 18.55 21.55 19 21 19 H3 C2.45 19 2 18.55 2 18 V6 C2 5.45 2.45 5 3 5 Z M5 9 H19 V10.5 H5 Z M5 12.25 H19 V13.75 H5 Z M5 15.5 H19 V17 H5 Z";
+}
+
+// 便携设备：竖向手机主体 + 顶部听筒缝 + 底部 Home 指示（evenodd 挖空）
+component DeviceGlyph inherits Path {
+    fill: #ffffff;
+    fill-rule: evenodd;
+    commands: "M7 2 H17 C18.1 2 19 2.9 19 4 V20 C19 21.1 18.1 22 17 22 H7 C5.9 22 5 21.1 5 20 V4 C5 2.9 5.9 2 7 2 Z M9.5 4.5 H14.5 V5.5 H9.5 Z M10.5 19 H13.5 V20.5 H10.5 Z";
+}
+
+// 文件图标方块：按 icon-class 渲染对应矢量图
+export component FileIcon inherits Rectangle {
+    in property <string> icon-class;
+    in property <string> label; // 兼容旧调用，目前未使用
+    in property <length> box: 58px;
+    in property <length> radius: 13px;
+    // 紧凑模式：列表行内 18x18 用，背景透明，图形跟随主题文字色
+    in property <bool> compact: false;
+    // 缩略图/系统图标位图：has-thumb 为真时直接渲染位图，覆盖矢量图形
+    in property <image> thumb;
+    in property <bool> has-thumb: false;
+    width: box;
+    height: box;
+    border-radius: radius;
+    border-width: 1px;
+    border-color: root.has-thumb ? transparent
+        : root.compact ? transparent : (Theme.dark ? #00000033 : #005aa01f);
+    clip: true;
+
+    // 缩略图层：图片缩略图/视频首帧/系统图标，按比例缩放保持纵横比
+    if root.has-thumb: Image {
+        x: 0; y: 0;
+        width: root.box; height: root.box;
+        source: root.thumb;
+        image-fit: contain;
+    }
+
+    // 背景：大图标有彩色填充，紧凑模式或有缩略图时透明
+    background: root.has-thumb ? transparent
+        : root.compact ? transparent
+        : icon-class == "folder" ? Theme.folder-bg
+        : icon-class == "image" ? Theme.image-bg
+        : icon-class == "code" ? Theme.code-bg
+        : icon-class == "archive" ? Theme.archive-bg
+        : icon-class == "audio" ? Theme.icon-default-bg
+        : icon-class == "video" ? Theme.icon-default-bg
+        : icon-class == "pdf" ? Theme.icon-default-bg
+        : icon-class == "drive" ? #3a6fb5
+        : icon-class == "device" ? #2a9d8f
+        : Theme.icon-default-bg;
+
+    // 内部图形尺寸：大图标占 60%，紧凑模式占 100%
+    property <length> inner-s: root.compact ? root.box : root.box * 0.62;
+    property <length> inner-off: (root.box - root.inner-s) / 2;
+
+    // 紧凑模式下的图形颜色：跟随主题文字色（暗色感知）
+    property <brush> glyph-color: root.compact
+        ? (Theme.dark ? #c7d4e1 : #5a6a7e)
+        : #ffffff;
+
+    if !root.has-thumb && !root.compact && icon-class == "folder": FolderGlyph {
+        x: root.inner-off; y: root.inner-off;
+        width: root.inner-s; height: root.inner-s;
+    }
+    if !root.has-thumb && !root.compact && icon-class == "image": ImageGlyph {
+        x: root.inner-off; y: root.inner-off;
+        width: root.inner-s; height: root.inner-s;
+    }
+    if !root.has-thumb && !root.compact && icon-class == "code": CodeGlyph {
+        x: root.inner-off; y: root.inner-off;
+        width: root.inner-s; height: root.inner-s;
+    }
+    if !root.has-thumb && !root.compact && icon-class == "archive": ArchiveGlyph {
+        x: root.inner-off; y: root.inner-off;
+        width: root.inner-s; height: root.inner-s;
+    }
+    if !root.has-thumb && !root.compact && icon-class == "audio": AudioGlyph {
+        x: root.inner-off; y: root.inner-off;
+        width: root.inner-s; height: root.inner-s;
+    }
+    if !root.has-thumb && !root.compact && icon-class == "video": VideoGlyph {
+        x: root.inner-off; y: root.inner-off;
+        width: root.inner-s; height: root.inner-s;
+    }
+    if !root.has-thumb && !root.compact && icon-class == "pdf": PdfGlyph {
+        x: root.inner-off; y: root.inner-off;
+        s: root.inner-s;
+    }
+    if !root.has-thumb && !root.compact && icon-class == "drive": DriveGlyph {
+        x: root.inner-off; y: root.inner-off;
+        width: root.inner-s; height: root.inner-s;
+    }
+    if !root.has-thumb && !root.compact && icon-class == "device": DeviceGlyph {
+        x: root.inner-off; y: root.inner-off;
+        width: root.inner-s; height: root.inner-s;
+    }
+    // 默认（无匹配/未知扩展名/未启用"显示扩展名"分类）
+    if !root.has-thumb && !root.compact && (icon-class == "default" || icon-class == ""): DocGlyph {
+        x: root.inner-off; y: root.inner-off;
+        width: root.inner-s; height: root.inner-s;
+    }
+    // 兼容旧的 icon-class 之外未列出类别
+    if !root.has-thumb && !root.compact && icon-class != "folder" && icon-class != "image" && icon-class != "code"
+        && icon-class != "archive" && icon-class != "audio" && icon-class != "video"
+        && icon-class != "pdf" && icon-class != "drive" && icon-class != "device"
+        && icon-class != "default" && icon-class != "": DocGlyph {
+        x: root.inner-off; y: root.inner-off;
+        width: root.inner-s; height: root.inner-s;
+    }
+
+    // 紧凑模式：直接用主题文字色绘制，无背景
+    if !root.has-thumb && root.compact && icon-class == "folder": Glyph {
+        x: 0; y: 0;
+        width: root.box; height: root.box;
+        d: "M10 4 H4 C2.9 4 2 4.9 2 6 V18 C2 19.1 2.9 20 4 20 H20 C21.1 20 22 19.1 22 18 V8 C22 6.9 21.1 6 20 6 H12 L10 4 Z";
+        glyph-color: root.glyph-color;
+    }
+    if !root.has-thumb && root.compact && icon-class == "image": Glyph {
+        x: 0; y: 0;
+        width: root.box; height: root.box;
+        d: "M3 3 H21 V21 H3 Z M16.5 9 a1.5 1.5 0 1 0 0 -3 a1.5 1.5 0 0 0 0 3 Z M5 17 L8.5 12.5 L11 15.5 L14 11.5 L19 17 Z";
+        fill-rule: evenodd;
+        glyph-color: root.glyph-color;
+    }
+    if !root.has-thumb && root.compact && icon-class == "code": Glyph {
+        x: 0; y: 0;
+        width: root.box; height: root.box;
+        d: "M9.4 16.6 L4.8 12 L9.4 7.4 L8 6 L2 12 L8 18 L9.4 16.6 Z M14.6 16.6 L19.2 12 L14.6 7.4 L16 6 L22 12 L16 18 L14.6 16.6 Z";
+        glyph-color: root.glyph-color;
+    }
+    if !root.has-thumb && root.compact && icon-class == "archive": Glyph {
+        x: 0; y: 0;
+        width: root.box; height: root.box;
+        d: "M3 6 L4.4 4.5 C4.78 4.07 5.35 3.84 5.94 3.84 H18.06 C18.65 3.84 19.22 4.07 19.6 4.5 L21 6 V19 C21 20.1 20.1 21 19 21 H5 C3.9 21 3 20.1 3 19 V6 Z M5.94 5.84 L6.75 4.84 H17.25 L18.06 5.84 H5.94 Z M12 17.5 L6.5 12 H10 V10 H14 V12 H17.5 L12 17.5 Z";
+        fill-rule: evenodd;
+        glyph-color: root.glyph-color;
+    }
+    if !root.has-thumb && root.compact && icon-class == "audio": Glyph {
+        x: 0; y: 0;
+        width: root.box; height: root.box;
+        d: "M12 3 V13.55 C11.41 13.21 10.73 13 10 13 C7.79 13 6 14.79 6 17 C6 19.21 7.79 21 10 21 C12.21 21 14 19.21 14 17 V7 H18 V3 H12 Z";
+        glyph-color: root.glyph-color;
+    }
+    if !root.has-thumb && root.compact && icon-class == "video": Glyph {
+        x: 0; y: 0;
+        width: root.box; height: root.box;
+        d: "M4 4 H20 V20 H4 Z M10 8 V16 L17 12 Z";
+        fill-rule: evenodd;
+        glyph-color: root.glyph-color;
+    }
+    if !root.has-thumb && root.compact && icon-class == "pdf": DocGlyph {
+        x: 0; y: 0;
+        width: root.box; height: root.box;
+    }
+    if !root.has-thumb && root.compact && icon-class == "drive": Glyph {
+        x: 0; y: 0;
+        width: root.box; height: root.box;
+        d: "M3 5 H21 C21.55 5 22 5.45 22 6 V18 C22 18.55 21.55 19 21 19 H3 C2.45 19 2 18.55 2 18 V6 C2 5.45 2.45 5 3 5 Z M5 9 H19 V10.5 H5 Z M5 12.25 H19 V13.75 H5 Z M5 15.5 H19 V17 H5 Z";
+        fill-rule: evenodd;
+        glyph-color: root.glyph-color;
+    }
+    if !root.has-thumb && root.compact && icon-class == "device": Glyph {
+        x: 0; y: 0;
+        width: root.box; height: root.box;
+        d: "M7 2 H17 C18.1 2 19 2.9 19 4 V20 C19 21.1 18.1 22 17 22 H7 C5.9 22 5 21.1 5 20 V4 C5 2.9 5.9 2 7 2 Z M9.5 4.5 H14.5 V5.5 H9.5 Z M10.5 19 H13.5 V20.5 H10.5 Z";
+        fill-rule: evenodd;
+        glyph-color: root.glyph-color;
+    }
+    // 紧凑模式默认/未知
+    if !root.has-thumb && root.compact && (icon-class == "default" || icon-class == ""): Glyph {
+        x: 0; y: 0;
+        width: root.box; height: root.box;
+        d: "M14 2 H6 C4.9 2 4 2.9 4 4 V20 C4 21.1 4.9 22 6 22 H18 C19.1 22 20 21.1 20 20 V8 L14 2 Z M14 2 V8 H20 M8 13 H16 M8 16 H16 M8 19 H13";
+        fill-rule: evenodd;
+        glyph-color: root.glyph-color;
+    }
+    if !root.has-thumb && root.compact && icon-class != "folder" && icon-class != "image" && icon-class != "code"
+        && icon-class != "archive" && icon-class != "audio" && icon-class != "video"
+        && icon-class != "pdf" && icon-class != "drive" && icon-class != "device"
+        && icon-class != "default" && icon-class != "": Glyph {
+        x: 0; y: 0;
+        width: root.box; height: root.box;
+        d: "M14 2 H6 C4.9 2 4 2.9 4 4 V20 C4 21.1 4.9 22 6 22 H18 C19.1 22 20 21.1 20 20 V8 L14 2 Z M14 2 V8 H20 M8 13 H16 M8 16 H16 M8 19 H13";
+        fill-rule: evenodd;
+        glyph-color: root.glyph-color;
+    }
+}

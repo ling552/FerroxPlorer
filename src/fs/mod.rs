@@ -1,0 +1,90 @@
+//! 文件系统核心模块
+
+pub mod clipboard;
+pub mod disk;
+pub mod hash;
+pub mod metadata;
+pub mod network;
+pub mod openwith;
+pub mod operations;
+// 空格键 Quick Look 预览内容计算（图片/文本/文件夹/其它归类）
+pub mod preview;
+pub mod recyclebin;
+// PE 文件 Authenticode 数字签名检测（字节解析，跨平台）
+pub mod signature;
+// 后台文件任务队列：复制 / 移动异步执行，带真实进度、暂停、取消
+pub mod tasks;
+// 目录实时监听：当前目录内容变化时自动刷新（基于 notify，无需手动 F5）
+pub mod watcher;
+// Windows 原生 Shell 右键菜单：IContextMenu + TrackPopupMenuEx（含第三方注册项）
+pub mod shell_menu;
+// Windows ShellNew 注册表枚举：读取系统右键"新建"菜单项
+pub mod shell_new;
+// 缩略图/系统图标统一提取：IShellItemImageFactory::GetImage（与资源管理器一致）
+pub mod thumbnail;
+// Windows 快速访问：Shell 命名空间枚举 + pintohome/unpinfromhome 动词
+pub mod default_app;
+pub mod devices;
+pub mod quickaccess;
+pub mod virtualfs;
+
+use std::path::PathBuf;
+
+/// 导航历史：维护后退/前进栈
+pub struct NavigationHistory {
+    back: Vec<PathBuf>,
+    forward: Vec<PathBuf>,
+    current: PathBuf,
+}
+
+impl NavigationHistory {
+    pub fn new(start: PathBuf) -> Self {
+        Self {
+            back: Vec::new(),
+            forward: Vec::new(),
+            current: start,
+        }
+    }
+
+    pub fn current(&self) -> &PathBuf {
+        &self.current
+    }
+
+    /// 跳转到新路径（清空前进栈）
+    pub fn navigate(&mut self, path: PathBuf) {
+        if path == self.current {
+            return;
+        }
+        self.back.push(self.current.clone());
+        self.current = path;
+        self.forward.clear();
+    }
+
+    pub fn can_back(&self) -> bool {
+        !self.back.is_empty()
+    }
+
+    pub fn can_forward(&self) -> bool {
+        !self.forward.is_empty()
+    }
+
+    pub fn go_back(&mut self) -> Option<&PathBuf> {
+        if let Some(prev) = self.back.pop() {
+            self.forward.push(self.current.clone());
+            self.current = prev;
+            Some(&self.current)
+        } else {
+            None
+        }
+    }
+
+    pub fn go_forward(&mut self) -> Option<&PathBuf> {
+        if let Some(next) = self.forward.pop() {
+            self.back.push(self.current.clone());
+            self.current = next;
+            Some(&self.current)
+        } else {
+            None
+        }
+    }
+}
