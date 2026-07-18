@@ -5,7 +5,7 @@
 ![Platform](https://img.shields.io/badge/platform-Windows-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-![ico](icon.webp)
+
 
 ## 功能特性
 
