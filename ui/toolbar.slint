@@ -283,11 +283,6 @@ export component Toolbar inherits Rectangle {
                 active: AppState.dual-pane;
                 clicked => { AppState.toggle-dual(); }
             }
-            // 双面板模式下：交换左右面板内容
-            if AppState.dual-pane: IconBtn {
-                glyph: "\u{E8AB}";   // Switch 交换左右面板
-                clicked => { AppState.swap-panes(); }
-            }
             IconBtn {
                 glyph: "\u{E90D}";   // DockRight 详情面板
                 active: AppState.show-details;

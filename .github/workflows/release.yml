@@ -16,6 +16,20 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      - name: 提取版本号(去掉 tag 的 v 前缀)
+        id: ver
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: 校验 tag 与应用版本一致
+        shell: pwsh
+        run: |
+          $tagVersion = "${{ steps.ver.outputs.version }}"
+          $cargoVersion = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          if ($cargoVersion -ne $tagVersion) {
+            throw "Cargo.toml 版本 $cargoVersion 与 tag 版本 $tagVersion 不一致"
+          }
+
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
 
@@ -24,11 +38,6 @@ jobs:
 
       - name: 构建 Release 二进制
         run: cargo build --release
-
-      - name: 提取版本号(去掉 tag 的 v 前缀)
-        id: ver
-        shell: bash
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: 打包 Windows 安装程序(Inno Setup)
         shell: pwsh

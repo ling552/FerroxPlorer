@@ -424,6 +424,11 @@ export component ActionBar inherits Rectangle {
             Divider {}
             // 压缩下拉：选择输出格式（ZIP / 7z / TAR / TAR.GZ），后台任务执行
             CompressButton { enabled: AppState.sel-count > 0; }
+            // 交换左右面板：仅双面板显示，且不依赖选中状态
+            if AppState.dual-pane: ActionBtn {
+                glyph: "\u{E8AB}"; label: "交换";
+                clicked => { AppState.swap-panes(); }
+            }
             // 解压：仅选中单个 ZIP 归档时显示
             if AppState.sel-is-archive: ActionBtn {
                 glyph: "\u{E896}"; label: "解压";

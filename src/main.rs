@@ -33,6 +33,12 @@ fn startup_path(setting: &str) -> PathBuf {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    // 安装程序卸载前调用：不创建窗口，只安全恢复仍由本应用持有的 Shell 关联。
+    if std::env::args_os().any(|arg| arg == "--unregister-default-file-manager") {
+        let _ = fs::default_app::set_default(false);
+        return Ok(());
+    }
+
     // 抑制 Slint 文本分词触发的 ICU4X "No segmentation model for language: ja"
     // 警告刷屏。
     log::set_max_level(log::LevelFilter::Error);
@@ -59,11 +65,20 @@ fn main() -> Result<(), slint::PlatformError> {
         })
         .filter(|p| p.is_dir());
     let start = arg_dir.unwrap_or_else(|| startup_path(&startup_config.settings.startup_open));
-    // 「默认文件管理器」自愈：开关开启但注册表未指向当前 exe（应用被移动/更新，
-    // 或键被外部清除）时重新写入，保证接管不失效
-    if startup_config.settings.default_file_manager && !fs::default_app::is_default() {
-        let _ = fs::default_app::set_default(true);
-    }
+    // 「默认文件管理器」自愈仅修复带本应用所有权标记的缺失项或旧安装路径；
+    // 若用户后来改用其它文件管理器，不会静默夺回关联。
+    let default_fm_state = if startup_config.settings.default_file_manager {
+        fs::default_app::registration_state()
+    } else {
+        fs::default_app::RegistrationState::Disabled
+    };
+    let default_fm_repair_error = if startup_config.settings.default_file_manager
+        && default_fm_state == fs::default_app::RegistrationState::Repairable
+    {
+        fs::default_app::set_default(true).err()
+    } else {
+        None
+    };
     let core = Rc::new(RefCell::new(AppCore::new(start.clone())));
     core.borrow_mut().config = startup_config;
 
@@ -83,6 +98,16 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // 启动时把持久化的用户设置推送到 Theme 与 AppState
     push_settings(&ui, &core);
+    if default_fm_state == fs::default_app::RegistrationState::External {
+        // 其它程序已接管至少一个入口：安全恢复本应用仍持有的其余入口，再关闭配置开关。
+        let _ = fs::default_app::set_default(false);
+        state.set_set_default_fm(false);
+        core.borrow_mut().config.settings.default_file_manager = false;
+        core.borrow().config.save();
+        state.set_status_text("默认文件管理器已由其它程序接管，已关闭本应用开关".into());
+    } else if let Some(error) = default_fm_repair_error {
+        state.set_status_text(format!("默认文件管理器自愈失败: {}", error).into());
+    }
 
     // 启动时把持久化的栏宽/列宽推送到 AppState
     {
@@ -3055,11 +3080,7 @@ fn bind_settings(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                     theme.set_translucent(val);
                     // 同步开关窗口透明（边框延伸/圆角/标题栏处理）与真实亚克力磨砂（浓度随 blur-level 连续变化）
                     #[cfg(windows)]
-                    {
-                        let blur = theme.get_blur_level();
-                        apply_acrylic_backdrop(&ui, val);
-                        apply_acrylic_blur_behind(&ui, val, blur);
-                    }
+                    apply_window_material(&ui);
                 }
                 "compact" => theme.set_compact(val),
                 "launch-startup" => st.set_set_launch_startup(val),
@@ -3196,10 +3217,7 @@ fn bind_settings(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                     theme.set_blur_level(val);
                     // 模糊度连续映射到亚克力磨砂浓度（仅 Windows 生效），不再是二元开关
                     #[cfg(windows)]
-                    {
-                        let translucent = theme.get_translucent();
-                        apply_acrylic_blur_behind(&ui, translucent, val);
-                    }
+                    apply_window_material(&ui);
                 }
                 _ => {}
             }
@@ -3597,6 +3615,32 @@ fn save_window_geometry(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     c.config.save();
 }
 
+#[cfg(windows)]
+fn apply_window_material(ui: &MainWindow) {
+    let theme = ui.global::<Theme>();
+    let translucent = theme.get_translucent();
+    apply_acrylic_backdrop(ui, translucent);
+    apply_acrylic_blur_behind(ui, translucent, theme.get_blur_level());
+}
+
+#[cfg(windows)]
+fn apply_current_window_effects(ui: &MainWindow) {
+    apply_window_round_corners(ui);
+    apply_window_material(ui);
+}
+
+#[cfg(windows)]
+fn schedule_window_effects(ui: &MainWindow, delays_ms: &[u64]) {
+    for &delay in delays_ms {
+        let w = ui.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(delay), move || {
+            if let Some(ui) = w.upgrade() {
+                apply_current_window_effects(&ui);
+            }
+        });
+    }
+}
+
 fn bind_window_chrome(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     // 最小化
     let w = ui.as_weak();
@@ -3613,20 +3657,30 @@ fn bind_window_chrome(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             let next = !ui.window().is_maximized();
             ui.window().set_maximized(next);
             ui.set_window_maximized(next);
-            // 最大化/还原会触发 FRAMECHANGED，DWM 会重现原生标题栏按钮，需再次剥离
+            // 最大化/还原会触发 FRAMECHANGED，DWM 可能重置非客户区与亚克力策略。
             #[cfg(windows)]
-            strip_native_caption_buttons(&ui);
+            schedule_window_effects(&ui, &[80]);
         }
     });
 
-    // 关闭窗口：先保存窗口几何（下次启动恢复位置/大小），再隐藏退出
+    // 关闭窗口：先保存窗口几何，再退出事件循环。
     let w = ui.as_weak();
     let c = core.clone();
     ui.on_close_window(move || {
         if let Some(ui) = w.upgrade() {
             save_window_geometry(&ui, &c);
-            let _ = ui.window().hide();
+            let _ = slint::quit_event_loop();
         }
+    });
+
+    // 系统关闭请求（Alt+F4、任务栏缩略图关闭等）同样保存，避免绕过自绘按钮。
+    let w = ui.as_weak();
+    let c = core.clone();
+    ui.window().on_close_requested(move || {
+        if let Some(ui) = w.upgrade() {
+            save_window_geometry(&ui, &c);
+        }
+        slint::CloseRequestResponse::HideWindow
     });
 
     // 拖动窗口：在标题栏空白处按下时调用 winit drag_window
@@ -3639,29 +3693,13 @@ fn bind_window_chrome(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         }
     });
 
-    // Windows 11：给无边框窗口的四角加系统圆角（DWM 合成层裁切）
-    // 延迟到事件循环启动后执行，确保底层 winit 窗口已创建
+    // Windows 11：窗口创建、首次显示和 DWM 首轮合成可能分阶段完成；有限重试并始终
+    // 读取当前 Theme，确保冷启动恢复的模糊度不会被后续窗口样式更新覆盖。
     #[cfg(windows)]
     {
-        let w = ui.as_weak();
-        let timer = Box::leak(Box::new(slint::Timer::default()));
-        timer.start(
-            slint::TimerMode::SingleShot,
-            std::time::Duration::from_millis(60),
-            move || {
-                if let Some(ui) = w.upgrade() {
-                    apply_window_round_corners(&ui);
-                    // 用 icon.png 设置窗口/任务栏图标
-                    set_window_icon(&ui);
-                    // 按持久化的半透明 + 模糊度设置启用真实亚克力磨砂
-                    let theme = ui.global::<Theme>();
-                    let translucent = theme.get_translucent();
-                    let blur = theme.get_blur_level();
-                    apply_acrylic_backdrop(&ui, translucent);
-                    apply_acrylic_blur_behind(&ui, translucent, blur);
-                }
-            },
-        );
+        // 图标是稳定窗口身份，仅设置一次；DWM 合成效果才需要有限重试。
+        set_window_icon(ui);
+        schedule_window_effects(ui, &[60, 250, 800]);
     }
 }
 
