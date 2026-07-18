@@ -5,6 +5,8 @@
 ![Platform](https://img.shields.io/badge/platform-Windows-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
+![ico](icon.webp)
+
 ## 功能特性
 
 - 📁 单/双面板文件浏览,列表与网格视图,标签页
