@@ -246,6 +246,9 @@ pub fn push_entries(ui: &MainWindow, core: &AppCore) {
 
     state.set_entries(ModelRc::new(VecModel::from(rows)));
 
+    // 导航到新目录后重置列表滚动位置到顶部（各列表视图监听此 token 变化归零 viewport-y）
+    state.set_scroll_top_token(state.get_scroll_top_token() + 1);
+
     // 每次重建模型自增代数，后台线程据此丢弃过期目录的结果
     let generation = THUMB_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     if !jobs.is_empty() {
@@ -450,6 +453,9 @@ pub fn push_right(ui: &MainWindow, core: &AppCore) {
 
     state.set_r_entries(ModelRc::new(VecModel::from(rows)));
 
+    // 导航到新目录后重置右面板滚动位置到顶部
+    state.set_r_scroll_top_token(state.get_r_scroll_top_token() + 1);
+
     let generation = R_THUMB_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     if !jobs.is_empty() {
         spawn_thumbnails(ui, jobs, generation, ThumbSide::Right);
@@ -605,6 +611,10 @@ pub fn update_selection_pane(ui: &MainWindow, core: &AppCore, right: bool) {
         if let Some(e) = tab.entry_at(sel_idx[0]) {
             state.set_has_selection(true);
             state.set_sel_is_archive(crate::fs::operations::is_zip_archive(Path::new(&e.path)));
+            state.set_sel_is_dir(e.is_dir);
+            // 切换选中项时重置文件夹大小计算状态：新文件夹需重新点「计算」
+            state.set_sel_size_calculating(false);
+            state.set_sel_path(e.path.clone().into());
             state.set_sel_name(e.name.clone().into());
             state.set_sel_kind(e.kind.clone().into());
             let loc = Path::new(&e.path)
@@ -662,6 +672,8 @@ pub fn update_selection_pane(ui: &MainWindow, core: &AppCore, right: bool) {
     }
     state.set_has_selection(false);
     state.set_sel_is_archive(false);
+    state.set_sel_is_dir(false);
+    state.set_sel_size_calculating(false);
     state.set_sel_has_thumb(false);
 }
 

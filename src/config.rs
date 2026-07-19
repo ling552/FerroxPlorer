@@ -18,6 +18,16 @@ pub struct Layout {
     pub col_kind: f32,
     #[serde(default = "default_col_size")]
     pub col_size: f32,
+    /// 详细视图「固定块」总宽（名称列与三个固定列的分界，拖名称列右缘调整）
+    #[serde(default = "default_col_block")]
+    pub col_block: f32,
+    /// 详细视图三个固定列的显示槽位（拖拽表头排序后持久化；0..2 互不重复）
+    #[serde(default)]
+    pub col_modified_ord: i32,
+    #[serde(default = "d_ord_one")]
+    pub col_kind_ord: i32,
+    #[serde(default = "d_ord_two")]
+    pub col_size_ord: i32,
     /// 双面板左侧占比（0.15..0.85），拖拽中间分隔条调整后持久化
     #[serde(default = "default_dual_ratio")]
     pub dual_ratio: f32,
@@ -51,6 +61,15 @@ fn default_col_kind() -> f32 {
 fn default_col_size() -> f32 {
     84.0
 }
+fn default_col_block() -> f32 {
+    484.0
+}
+fn d_ord_one() -> i32 {
+    1
+}
+fn d_ord_two() -> i32 {
+    2
+}
 fn default_dual_ratio() -> f32 {
     0.5
 }
@@ -63,6 +82,10 @@ impl Default for Layout {
             col_modified: default_col_modified(),
             col_kind: default_col_kind(),
             col_size: default_col_size(),
+            col_block: default_col_block(),
+            col_modified_ord: 0,
+            col_kind_ord: 1,
+            col_size_ord: 2,
             dual_ratio: default_dual_ratio(),
             win_x: 0,
             win_y: 0,

@@ -50,8 +50,8 @@ export component MainWindow inherits Window {
     background: transparent;
     // 无边框：自绘标题栏，标签页与窗口按钮同行（Windows 资源管理器风格）
     no-frame: true;
-    // 无边框下恢复边缘拖拽缩放能力（winit 后端）
-    resize-border-width: 6px;
+    // 边缘 resize 由原生 WM_NCHITTEST subclass 处理（见 main.rs install_native_resize），
+    // 不再用 winit resize-border-width--后者在无边框窗口上拖拽会忽大忽小、剧烈抖动。
 
     // 对话框/菜单控制
     in-out property <bool> props-open <=> props.open;

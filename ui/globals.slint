@@ -144,7 +144,15 @@ export global AppState {
     in-out property <string> sel-name;
     in-out property <string> sel-kind;
     in-out property <string> sel-location;
+    // 选中项完整路径（供「计算文件夹大小」等后台操作读取并校验）
+    in-out property <string> sel-path;
     in-out property <string> sel-size;
+    // 选中项是否为文件夹：详情栏据此显示「计算」按钮（递归统计总大小）
+    in-out property <bool> sel-is-dir: false;
+    // 文件夹大小是否正在计算中（后台递归统计，避免阻塞 UI）
+    in-out property <bool> sel-size-calculating: false;
+    // 触发后台递归计算当前选中文件夹的总大小（含所有子文件），完成后回填 sel-size
+    callback calculate-folder-size();
     in-out property <string> sel-modified;
     in-out property <string> sel-created;
     // 默认打开程序友好名（属性「常规」页「打开方式」行；文件夹/无关联为空）
@@ -186,6 +194,13 @@ export global AppState {
     in-out property <length> col-modified-w: 150px;
     in-out property <length> col-kind-w: 96px;
     in-out property <length> col-size-w: 84px;
+    // 详细视图「固定块」区域宽度（名称列与三个固定列的分界，拖名称列右侧分隔线调整）。
+    // 决定三个固定列的总可用空间：块越宽列的调整上限越大，名称列相应变窄。
+    in-out property <length> col-block-w: 484px;
+    // 持久化固定块宽度（拖拽结束时调用）
+    callback save-col-block(length);
+    // 持久化列显示顺序（拖拽表头排序松手后调用：修改日期、类型、大小的槽位）
+    callback save-col-order(int, int, int);
     // 详细视图三个固定列的显示槽位（0..2）：拖拽表头交换顺序，会话内生效
     in-out property <int> col-modified-ord: 0;
     in-out property <int> col-kind-ord: 1;
@@ -411,6 +426,12 @@ export global AppState {
     // ════════ 图标缩放（Ctrl + 鼠标滚轮）：列表/网格视图共用，双面板同步 ════════
     // 缩放比例，1.0 为默认。范围 0.7..2.0，由各视图的输入层调节并经 set-number 持久化。
     in-out property <float> icon-scale: 1.0;
+
+    // ════════ 列表滚动重置：导航到新目录后把列表滚回顶部 ════════
+    // Rust 在 push_entries / push_right 后自增对应 token；各列表/网格视图监听
+    // token 变化把 viewport-y 归零，避免新目录仍停留在上次的滚动位置（显示中段）。
+    in-out property <int> scroll-top-token: 0;
+    in-out property <int> r-scroll-top-token: 0;
 
     // ════════ 跨面板拖拽：在两个面板间拖动条目（默认复制，按住 Ctrl 移动）════════
     in-out property <bool> pane-drag-active: false;  // 是否正在跨面板拖拽

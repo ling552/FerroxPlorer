@@ -164,7 +164,6 @@ fn legacy_registration(hkcu: &RegKey) -> bool {
     })
 }
 
-
 #[cfg(windows)]
 fn backup_target(
     hkcu: &RegKey,

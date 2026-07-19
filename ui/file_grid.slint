@@ -30,6 +30,10 @@ export component FileGrid inherits Rectangle {
     property <int> cols: max(1, floor((list.visible-width - 24px) / root.pitch));
     property <int> rows: ceil(AppState.entries.length / max(1, root.cols));
 
+    // 滚动重置：导航新目录时归零 viewport-y，避免停留在上次的滚动位置
+    property <int> scroll-token: AppState.scroll-top-token;
+    changed scroll-token => { list.viewport-y = 0px; }
+
     list := ListView {
         width: 100%;
         height: 100%;

@@ -14,6 +14,10 @@ component RightList inherits Rectangle {
     property <length> scaled-row-h: Theme.row-h * AppState.icon-scale;
     property <length> icon-box: 18px * AppState.icon-scale;
 
+    // 滚动重置：右面板导航新目录时归零 viewport-y
+    property <int> scroll-token: AppState.r-scroll-top-token;
+    changed scroll-token => { list.viewport-y = 0px; }
+
     list := ListView {
         width: 100%;
         height: 100%;
@@ -103,6 +107,10 @@ component RightGrid inherits Rectangle {
     property <length> row-h: root.cell-h + 10px;
     property <int> cols: max(1, floor((list.visible-width - 24px) / root.pitch));
     property <int> rows: ceil(AppState.r-entries.length / max(1, root.cols));
+
+    // 滚动重置：右面板导航新目录时归零 viewport-y
+    property <int> scroll-token: AppState.r-scroll-top-token;
+    changed scroll-token => { list.viewport-y = 0px; }
 
     list := ListView {
         width: 100%;

@@ -106,7 +106,52 @@ export component DetailsPane inherits Rectangle {
                             padding-top: 10px;
                             spacing: 8px;
                             info-row { label: "位置"; value: AppState.sel-location; }
-                            info-row { label: "大小"; value: AppState.sel-size; }
+                            // 大小：文件直接显示；文件夹默认显示「计算」按钮，
+                            // 点击后台递归统计总大小（含所有子文件），完成后回填此处
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Text {
+                                    text: "大小";
+                                    width: 74px;
+                                    font-size: Theme.fs-small;
+                                    color: Theme.subtle;
+                                    vertical-alignment: center;
+                                }
+                                // 已计算完成（sel-size 非占位「—」）：直接显示结果
+                                if !AppState.sel-is-dir || AppState.sel-size != "—": Text {
+                                    text: AppState.sel-size;
+                                    font-size: Theme.fs-small;
+                                    color: Theme.text;
+                                    wrap: word-wrap;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                                // 文件夹且尚未计算：显示「计算」按钮（文字与边框用主题色）
+                                if AppState.sel-is-dir && AppState.sel-size == "—": Rectangle {
+                                    width: calc-btn.preferred-width;
+                                    height: 24px;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: Theme.primary;
+                                    background: calc-touch.has-hover ? Theme.primary.with-alpha(0.12) : transparent;
+                                    calc-btn := HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        spacing: 6px;
+                                        Text {
+                                            text: AppState.sel-size-calculating ? "计算中…" : "计算";
+                                            font-size: Theme.fs-small;
+                                            color: Theme.primary;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    calc-touch := TouchArea {
+                                        enabled: !AppState.sel-size-calculating;
+                                        mouse-cursor: calc-touch.enabled ? MouseCursor.pointer : MouseCursor.default;
+                                        clicked => { AppState.calculate-folder-size(); }
+                                    }
+                                }
+                            }
                             info-row { label: "修改时间"; value: AppState.sel-modified; }
                         }
                     }

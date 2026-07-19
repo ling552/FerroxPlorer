@@ -117,10 +117,23 @@ fn main() -> Result<(), slint::PlatformError> {
         state.set_col_modified_w(lay.col_modified);
         state.set_col_kind_w(lay.col_kind);
         state.set_col_size_w(lay.col_size);
+        state.set_col_block_w(lay.col_block.max(216.0));
+        // 列显示顺序：三个槽位互不重复才应用，避免损坏的配置造成两列重叠
+        let (mo, ko, so) = (lay.col_modified_ord, lay.col_kind_ord, lay.col_size_ord);
+        let mut slots = [mo, ko, so];
+        slots.sort_unstable();
+        if slots == [0, 1, 2] {
+            state.set_col_modified_ord(mo);
+            state.set_col_kind_ord(ko);
+            state.set_col_size_ord(so);
+        }
         state.set_dual_ratio(lay.dual_ratio.clamp(0.15, 0.85));
     }
 
-    // 恢复上次关闭时的窗口位置与大小（物理像素；win_w<=0 表示首启，用默认值）
+    // 恢复上次关闭时的窗口位置与大小（物理像素；win_w<=0 表示首启，用默认值）。
+    // 必须等 winit 窗口真正创建后用 winit 原生物理像素 API 应用（实测创建发生在
+    // 事件循环启动后 80-250ms 之间）：过早经 Slint set_size 设置会在 scale_factor
+    // 尚为 1.0 时被记成逻辑尺寸，窗口显示后按实际 DPI 再放大一次，每次重启复利膨胀。
     {
         let (x, y, w, h, maximized) = {
             let lay = &core.borrow().config.layout;
@@ -132,15 +145,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 lay.win_maximized,
             )
         };
-        if w > 200 && h > 200 {
-            ui.window()
-                .set_size(slint::PhysicalSize::new(w as u32, h as u32));
-            ui.window().set_position(slint::PhysicalPosition::new(x, y));
-        }
-        if maximized {
-            ui.window().set_maximized(true);
-            ui.set_window_maximized(true);
-        }
+        restore_window_geometry(&ui, x, y, w, h, maximized, 20);
     }
 
     // 启动时推送已保存的网络位置列表（设置「云存储账号」页展示）
@@ -492,6 +497,25 @@ fn bind_layout(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         lay.col_modified = col_mod;
         lay.col_kind = col_kind;
         lay.col_size = col_size;
+        core.config.save();
+    });
+
+    // 详细视图「固定块」宽度（名称列右缘拖出的分界）持久化
+    let c = core.clone();
+    state.on_save_col_block(move |block_w| {
+        let mut core = c.borrow_mut();
+        core.config.layout.col_block = block_w;
+        core.config.save();
+    });
+
+    // 详细视图列显示顺序持久化（拖拽表头排序松手后）
+    let c = core.clone();
+    state.on_save_col_order(move |mo, ko, so| {
+        let mut core = c.borrow_mut();
+        let lay = &mut core.config.layout;
+        lay.col_modified_ord = mo;
+        lay.col_kind_ord = ko;
+        lay.col_size_ord = so;
         core.config.save();
     });
 
@@ -2074,6 +2098,68 @@ fn bind_selection(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             ui_bridge::refresh_selection(&ui, &c.borrow());
         }
     });
+
+    // 计算文件夹总大小：后台递归统计选中文件夹内所有文件字节数，完成后回填 sel-size。
+    // 大目录递归耗时，放工作线程避免阻塞 UI；回填时校验选中项未变，防止竞态串扰。
+    let w = ui.as_weak();
+    state.on_calculate_folder_size(move || {
+        let ui = match w.upgrade() {
+            Some(u) => u,
+            None => return,
+        };
+        let state = ui.global::<AppState>();
+        if !state.get_sel_is_dir() {
+            return;
+        }
+        let path = state.get_sel_path().to_string();
+        if path.is_empty() {
+            return;
+        }
+        state.set_sel_size_calculating(true);
+        let w2 = w.clone();
+        std::thread::spawn(move || {
+            let total = dir_total_size(std::path::Path::new(&path));
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = w2.upgrade() {
+                    let state = ui.global::<AppState>();
+                    // 选中项仍是同一文件夹时才回填（用户可能已切换）
+                    if state.get_sel_path() == path.as_str()
+                        && state.get_sel_is_dir()
+                        && state.get_sel_size_calculating()
+                    {
+                        state.set_sel_size(
+                            format!("{} ({} 字节)", fs::metadata::human_size(total), total).into(),
+                        );
+                        state.set_sel_size_calculating(false);
+                    }
+                }
+            });
+        });
+    });
+}
+
+/// 递归统计目录下所有文件的总字节数（含子目录，忽略无权限/无法访问的项）。
+/// 用显式栈避免深层目录递归溢出；符号链接目录不跟进，防止循环。
+fn dir_total_size(path: &std::path::Path) -> u64 {
+    let mut total: u64 = 0;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for entry in rd.flatten() {
+                // file_type 不跟随符号链接，避免环路
+                if let Ok(ft) = entry.file_type() {
+                    if ft.is_dir() {
+                        stack.push(entry.path());
+                    } else if ft.is_file() {
+                        if let Ok(m) = entry.metadata() {
+                            total += m.len();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    total
 }
 
 // ─── 文件操作 ───
@@ -3594,6 +3680,48 @@ fn bind_tabs(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
 
 // ─── 窗口控制（无边框自绘标题栏）───
 
+/// 等 winit 窗口就绪后恢复窗口几何（物理像素），未就绪则每 40ms 重试。
+/// 用 winit 原生 API 而非 Slint window().set_size：后者在 scale_factor 未确定时
+/// 会把物理值当逻辑值记录，显示后按 DPI 再放大导致尺寸每次重启膨胀。
+fn restore_window_geometry(
+    ui: &MainWindow,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    maximized: bool,
+    retries_left: u32,
+) {
+    let mut applied = false;
+    ui.window().with_winit_window(|winit_window| {
+        // scale_factor 就绪即窗口已真正创建；此时物理像素语义稳定
+        if w > 200 && h > 200 {
+            let _ =
+                winit_window.request_inner_size(winit::dpi::PhysicalSize::new(w as u32, h as u32));
+            winit_window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+        }
+        if maximized {
+            winit_window.set_maximized(true);
+        }
+        applied = true;
+    });
+    if applied {
+        if maximized {
+            ui.set_window_maximized(true);
+        }
+        return;
+    }
+    // winit 窗口尚未创建（with_winit_window 未执行闭包）：稍后重试
+    if retries_left > 0 {
+        let w_ui = ui.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(40), move || {
+            if let Some(ui) = w_ui.upgrade() {
+                restore_window_geometry(&ui, x, y, w, h, maximized, retries_left - 1);
+            }
+        });
+    }
+}
+
 /// 把当前窗口位置/大小/最大化状态写回配置（应用关闭或安装更新退出前调用）。
 /// 最大化时仅记录标志，不覆盖已保存的常规尺寸——还原后仍回到之前的大小。
 fn save_window_geometry(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
@@ -3625,6 +3753,9 @@ fn apply_window_material(ui: &MainWindow) {
 
 #[cfg(windows)]
 fn apply_current_window_effects(ui: &MainWindow) {
+    // 原生边缘 resize hook（幂等）：winit 窗口可能晚于首个定时器创建，
+    // 借助与 DWM 效果相同的重试序列，确保窗口就绪后完成安装
+    install_native_resize(ui);
     apply_window_round_corners(ui);
     apply_window_material(ui);
 }
@@ -3673,13 +3804,16 @@ fn bind_window_chrome(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         }
     });
 
-    // 系统关闭请求（Alt+F4、任务栏缩略图关闭等）同样保存，避免绕过自绘按钮。
+    // 系统关闭请求（Alt+F4、任务栏缩略图关闭等）同样保存几何，并真正退出事件循环。
+    // 仅返回 HideWindow 只会隐藏窗口、进程仍在后台运行，用户会以为「没关掉」；
+    // 保存后主动 quit_event_loop，与自绘关闭按钮走同一退出路径。
     let w = ui.as_weak();
     let c = core.clone();
     ui.window().on_close_requested(move || {
         if let Some(ui) = w.upgrade() {
             save_window_geometry(&ui, &c);
         }
+        let _ = slint::quit_event_loop();
         slint::CloseRequestResponse::HideWindow
     });
 
@@ -3695,6 +3829,7 @@ fn bind_window_chrome(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
 
     // Windows 11：窗口创建、首次显示和 DWM 首轮合成可能分阶段完成；有限重试并始终
     // 读取当前 Theme，确保冷启动恢复的模糊度不会被后续窗口样式更新覆盖。
+    // 原生边缘 resize hook 也在该重试序列内幂等安装（apply_current_window_effects）。
     #[cfg(windows)]
     {
         // 图标是稳定窗口身份，仅设置一次；DWM 合成效果才需要有限重试。
@@ -3951,6 +4086,119 @@ fn apply_window_round_corners(ui: &MainWindow) {
         }
     });
 }
+
+/// WM_NCHITTEST 自定义窗口过程：让无边框窗口的边缘由 Windows 原生 resize 引擎处理。
+///
+/// winit 的 resize-border-width 在 Slint 无边框窗口上实现不稳定，拖拽边缘时会
+/// 忽大忽小、剧烈抖动（尤其右上角）。改为替换窗口过程拦截 WM_NCHITTEST：指针
+/// 落在窗口边缘 6 逻辑像素内时返回 HTLEFT/HTRIGHT/HTTOP/HTBOTTOM 等命中码，
+/// 交由系统原生处理 resize（平滑无抖动）；其余消息交给原窗口过程 CallWindowProcW，
+/// 保持 Slint 客户区（标题栏拖动、按钮、列表）的原有指针路由不变。
+/// 原窗口过程指针（0 = 尚未安装）。用原子而非 static mut：窗口过程在 UI 线程
+/// 被系统回调，安装也在 UI 线程，但原子读写避免 static_mut_refs 的未定义行为。
+#[cfg(windows)]
+static ORIGINAL_WNDPROC: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(windows)]
+unsafe extern "system" fn hit_test_wndproc(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows_sys::Win32::Foundation::WPARAM,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallWindowProcW, DefWindowProcW, GetWindowRect, IsZoomed, HTBOTTOM, HTBOTTOMLEFT,
+        HTBOTTOMRIGHT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, WM_NCHITTEST,
+    };
+
+    // 最大化时关闭边缘 resize，避免最大化状态下拖边缘触发还原抖动
+    if msg == WM_NCHITTEST && IsZoomed(hwnd) == 0 {
+        // lParam 低字=x、高字=y（屏幕物理像素，均为有符号 short）
+        let packed = lparam as u32;
+        let sx = (packed & 0xffff) as i16 as i32;
+        let sy = ((packed >> 16) & 0xffff) as i16 as i32;
+        let mut rc = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        if GetWindowRect(hwnd, &mut rc) != 0 {
+            let dpi = GetDpiForWindow(hwnd);
+            // 6 逻辑像素的 resize 边缘，按窗口 DPI 换算为物理像素
+            let border = if dpi > 0 {
+                (6.0 * dpi as f32 / 96.0).round() as i32
+            } else {
+                6
+            };
+            let on_left = sx < rc.left + border;
+            let on_right = sx >= rc.right - border;
+            let on_top = sy < rc.top + border;
+            let on_bottom = sy >= rc.bottom - border;
+            if on_left && on_top {
+                return HTTOPLEFT as isize;
+            }
+            if on_right && on_top {
+                return HTTOPRIGHT as isize;
+            }
+            if on_left && on_bottom {
+                return HTBOTTOMLEFT as isize;
+            }
+            if on_right && on_bottom {
+                return HTBOTTOMRIGHT as isize;
+            }
+            if on_left {
+                return HTLEFT as isize;
+            }
+            if on_right {
+                return HTRIGHT as isize;
+            }
+            if on_top {
+                return HTTOP as isize;
+            }
+            if on_bottom {
+                return HTBOTTOM as isize;
+            }
+        }
+    }
+    let prev = ORIGINAL_WNDPROC.load(std::sync::atomic::Ordering::Relaxed);
+    if prev != 0 {
+        let proc: windows_sys::Win32::UI::WindowsAndMessaging::WNDPROC =
+            std::mem::transmute::<usize, _>(prev);
+        CallWindowProcW(proc, hwnd, msg, wparam, lparam)
+    } else {
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
+}
+
+/// 为窗口安装边缘 resize 窗口过程（替换原 WNDPROC，仅一次）。
+#[cfg(windows)]
+fn install_native_resize(ui: &MainWindow) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, GWLP_WNDPROC};
+
+    ui.window().with_winit_window(|winit_window| {
+        let Ok(handle) = winit_window.window_handle() else {
+            return;
+        };
+        if let RawWindowHandle::Win32(h) = handle.as_raw() {
+            let hwnd = isize::from(h.hwnd) as HWND;
+            // 仅首次安装：原 WNDPROC 尚未保存时才替换，避免重复 hook
+            if ORIGINAL_WNDPROC.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                let new_proc = hit_test_wndproc as *const () as usize as isize;
+                let prev = unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, new_proc) };
+                // 保存原窗口过程供 CallWindowProcW 回调；0 表示失败，回落 DefWindowProc
+                ORIGINAL_WNDPROC.store(prev as usize, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn install_native_resize(_ui: &MainWindow) {}
 
 /// 打开 Windows 原生 ChooseColor 取色板对话框（模态）。
 /// `initial` 为初始选中颜色，`hwnd` 为父窗口句柄。
