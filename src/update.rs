@@ -54,8 +54,10 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
     parse_ver(latest) > parse_ver(current)
 }
 
-/// 请求 GitHub API 获取最新 Release。
-/// 返回 Err(用户可读的中文错误信息)。在后台线程调用（阻塞最长 ~15s）。
+/// 请求 GitHub 获取最新 Release。
+/// 优先走 REST API；API 返回 403/429（未认证限流，共享出口 IP 时常见）时
+/// 回退到网页跳转端点解析最新版本号，避免「检查更新」直接报错。
+/// 返回 Err(用户可读的中文错误信息)。在后台线程调用（阻塞最长 ~30s）。
 pub fn check_latest() -> Result<ReleaseInfo, String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let resp = ureq::get(&url)
@@ -63,13 +65,19 @@ pub fn check_latest() -> Result<ReleaseInfo, String> {
         .set("User-Agent", "FerroxPlorer-Updater")
         .set("Accept", "application/vnd.github+json")
         .timeout(Duration::from_secs(15))
-        .call()
-        .map_err(|e| match e {
-            // 404：仓库尚无任何 Release
-            ureq::Error::Status(404, _) => "仓库暂无发布版本".to_string(),
-            ureq::Error::Status(code, _) => format!("GitHub 接口返回 {code}"),
-            ureq::Error::Transport(t) => format!("网络请求失败：{t}"),
-        })?;
+        .call();
+    let resp = match resp {
+        Ok(r) => r,
+        // 404：仓库尚无任何 Release
+        Err(ureq::Error::Status(404, _)) => return Err("仓库暂无发布版本".to_string()),
+        // 403/429：API 未认证限流，改走网页端点（不受 API 配额限制）
+        Err(ureq::Error::Status(code, _)) if code == 403 || code == 429 => {
+            return check_latest_via_web()
+                .map_err(|e| format!("GitHub 接口限流（{code}），备用通道失败：{e}"));
+        }
+        Err(ureq::Error::Status(code, _)) => return Err(format!("GitHub 接口返回 {code}")),
+        Err(ureq::Error::Transport(t)) => return Err(format!("网络请求失败：{t}")),
+    };
 
     let json: serde_json::Value = resp.into_json().map_err(|e| format!("解析响应失败：{e}"))?;
 
@@ -102,6 +110,47 @@ pub fn check_latest() -> Result<ReleaseInfo, String> {
             .to_string(),
         asset_name: asset["name"].as_str().unwrap_or("update.exe").to_string(),
         asset_size: asset["size"].as_u64().unwrap_or(0),
+    })
+}
+
+/// 备用检查通道：请求 `releases/latest` 网页端点（禁止自动重定向），
+/// 从 302 跳转的 Location 头解析最新 tag，再按发布命名规则构造安装包直链。
+/// 该端点不消耗 API 配额；缺点是拿不到更新说明与资产大小（下载时以
+/// Content-Length 兜底显示进度）。
+fn check_latest_via_web() -> Result<ReleaseInfo, String> {
+    let agent = ureq::builder().redirects(0).build();
+    let url = format!("https://github.com/{REPO}/releases/latest");
+    let resp = agent
+        .get(&url)
+        .set("User-Agent", "FerroxPlorer-Updater")
+        .timeout(Duration::from_secs(15))
+        .call();
+    // redirects(0) 下 3xx 可能作为 Ok 或 Status 错误返回，两种都取响应
+    let resp = match resp {
+        Ok(r) => r,
+        Err(ureq::Error::Status(code, r)) if (300..400).contains(&code) => r,
+        Err(ureq::Error::Status(code, _)) => return Err(format!("网页端点返回 {code}")),
+        Err(ureq::Error::Transport(t)) => return Err(format!("网络请求失败：{t}")),
+    };
+    let loc = resp.header("location").unwrap_or_default();
+    // 形如 https://github.com/{repo}/releases/tag/v0.3.0
+    let tag = loc
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if tag.is_empty() || !tag.starts_with(['v', 'V']) {
+        return Err("无法从跳转地址解析版本号".to_string());
+    }
+    let version = tag.trim_start_matches(['v', 'V']).to_string();
+    let asset_name = format!("FerroxPlorer-Setup-{version}.exe");
+    Ok(ReleaseInfo {
+        version,
+        notes: String::new(),
+        asset_url: format!("https://github.com/{REPO}/releases/download/{tag}/{asset_name}"),
+        asset_name,
+        asset_size: 0,
     })
 }
 

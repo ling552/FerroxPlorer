@@ -289,7 +289,14 @@ export global AppState {
     in-out property <string> ql-subtitle;     // 类型 + 大小等副标题
     in-out property <image> ql-image;          // 图片预览大图（ql-kind==1）
     in-out property <bool> ql-has-image;
-    in-out property <string> ql-text;          // 文本预览内容（ql-kind==2）
+    // 图片真实像素尺寸（读文件头获得；驱动 1:1 显示、缩放与副标题）
+    in-out property <int> ql-img-w: 0;
+    in-out property <int> ql-img-h: 0;
+    in-out property <string> ql-text;          // 文本预览正文层（ql-kind==2）
+    // 代码高亮染色层：与 ql-text 逐字符对齐，等宽字体原位叠加显示多色代码
+    in-out property <string> ql-code-kw;       // 关键字与数字层
+    in-out property <string> ql-code-str;      // 字符串层
+    in-out property <string> ql-code-cmt;      // 注释层
     in-out property <string> ql-info;          // 文件夹统计 / 其它信息（ql-kind==0/3）
     in-out property <string> ql-icon-class;    // 无缩略图时的矢量图标类别
     // 条目的真实缩略图/系统图标（取自文件列表模型），头部与信息页大图标优先使用

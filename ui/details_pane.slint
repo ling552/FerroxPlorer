@@ -126,8 +126,16 @@ export component DetailsPane inherits Rectangle {
                                     horizontal-stretch: 1;
                                     vertical-alignment: center;
                                 }
-                                // 文件夹且尚未计算：显示「计算」按钮（文字与边框用主题色）
-                                if AppState.sel-is-dir && AppState.sel-size == "—": Rectangle {
+                                // 自动计算模式（设置开启）：选中即后台统计，无按钮，期间显示计算中
+                                if AppState.sel-is-dir && AppState.sel-size == "—" && AppState.set-calc-size: Text {
+                                    text: AppState.sel-size-calculating ? "计算中…" : "—";
+                                    font-size: Theme.fs-small;
+                                    color: Theme.muted;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                                // 手动模式：文件夹且尚未计算时显示「计算」按钮（文字与边框用主题色）
+                                if AppState.sel-is-dir && AppState.sel-size == "—" && !AppState.set-calc-size: Rectangle {
                                     width: calc-btn.preferred-width;
                                     height: 24px;
                                     border-radius: 6px;

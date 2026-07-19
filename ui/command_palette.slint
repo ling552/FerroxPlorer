@@ -28,7 +28,11 @@ export component CommandPalette inherits Rectangle {
             x: (parent.width - 580px) / 2;
             y: 118px;
             width: 580px;
-            max-height: 438px;
+            // 高度随窗口自适应（下缘至少留 60px），并裁切内容：
+            // 之前固定 438px 且无 clip，列表溢出部分"看得见点不到"（绘制在
+            // Flickable 命中区之外）；clip 后配合滚动，所有命令都可直接点击
+            max-height: max(300px, root.height - 178px);
+            clip: true;
             border-radius: 16px;
             background: rgba(33, 42, 56, 0.92);
             border-width: 1px;

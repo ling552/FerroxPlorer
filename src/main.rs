@@ -1442,6 +1442,20 @@ fn reload_active_pane(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     }
 }
 
+/// 在指定延迟点补刷活动面板。删除/系统菜单命令等 Shell 操作可能异步收尾，
+/// 立即 reload 仍读到旧目录内容；延迟补刷保证视图最终与磁盘一致。
+fn schedule_pane_reloads(ui: &MainWindow, core: &Rc<RefCell<AppCore>>, delays_ms: &[u64]) {
+    for &delay in delays_ms {
+        let w = ui.as_weak();
+        let c = core.clone();
+        slint::Timer::single_shot(std::time::Duration::from_millis(delay), move || {
+            if let Some(ui) = w.upgrade() {
+                reload_active_pane(&ui, &c);
+            }
+        });
+    }
+}
+
 /// 在当前活跃标签页跳转到指定路径（支持虚拟路径 tag:// recycle:// network://）
 fn navigate_to(ui: &MainWindow, core: &Rc<RefCell<AppCore>>, target: PathBuf) {
     let target_str = target.to_string_lossy().to_string();
@@ -2425,6 +2439,9 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                 Err(e) => format!("删除失败：{}", e),
             };
             reload_active_pane(&ui, &c);
+            // 大文件夹的回收站移动由 Shell 异步收尾，立即 reload 可能仍读到旧目录项；
+            // 延迟补刷两次，确保被删条目从视图消失（无需用户手动刷新）
+            schedule_pane_reloads(&ui, &c, &[600, 2000]);
             ui.global::<AppState>().set_status_text(msg.into());
         }
     });
@@ -2878,6 +2895,8 @@ fn bind_context_menu_ext(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             if invoked {
                 fs::thumbnail::clear_all_caches();
                 reload_active_pane(&ui, &c);
+                // Shell 命令（删除/粘贴等）异步执行：延迟补刷确保结果反映到视图
+                schedule_pane_reloads(&ui, &c, &[600, 2000]);
             }
         }
     });
@@ -2903,6 +2922,8 @@ fn bind_context_menu_ext(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             let invoked = show_system_background_menu(&ui, &dir, mx, my);
             if invoked {
                 reload_active_pane(&ui, &c);
+                // 背景菜单命令（新建/粘贴等）同样可能异步收尾
+                schedule_pane_reloads(&ui, &c, &[600, 2000]);
             }
         }
     });
@@ -3687,19 +3708,71 @@ fn bind_hash(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         if let Some(ui) = w.upgrade() {
             let right = toolbar_routes_right(&ui);
             if ui_bridge::fill_quicklook(&ui, &c.borrow(), right) {
-                ui.global::<AppState>().set_quicklook_open(true);
+                let st = ui.global::<AppState>();
+                st.set_quicklook_open(true);
+                // 视频：在预览内容区之上启动 Media Foundation 子窗口播放（含音频）
+                if st.get_ql_kind() == 4 {
+                    let path = st.get_sel_path().to_string();
+                    if !path.is_empty() {
+                        start_video_preview(&ui, &path);
+                    }
+                } else {
+                    fs::video_preview::stop();
+                }
             }
         }
     });
 
-    // 关闭 Quick Look
+    // 关闭 Quick Look：同时停止可能进行中的视频播放
     let w = ui.as_weak();
     state.on_close_quicklook(move || {
         if let Some(ui) = w.upgrade() {
+            fs::video_preview::stop();
             ui.global::<AppState>().set_quicklook_open(false);
         }
     });
 }
+
+/// 计算预览卡片内容区在窗口内的物理像素矩形并启动视频子窗口播放。
+/// 与 quick_look.slint 的布局约定保持一致：卡片 640×560 居中、头部 64、底部 38。
+#[cfg(windows)]
+fn start_video_preview(ui: &MainWindow, path: &str) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let path = path.to_string();
+    ui.window().with_winit_window(|winit_window| {
+        let scale = winit_window.scale_factor() as f32;
+        let size = winit_window.inner_size();
+        let (win_w, win_h) = (size.width as f32, size.height as f32);
+        let card_w = 640.0 * scale;
+        let card_h = 560.0 * scale;
+        let card_x = (win_w - card_w) / 2.0;
+        let card_y = (win_h - card_h) / 2.0;
+        let content_y = card_y + 64.0 * scale;
+        let content_h = card_h - (64.0 + 38.0) * scale;
+        let Ok(handle) = winit_window.window_handle() else {
+            return;
+        };
+        if let RawWindowHandle::Win32(h) = handle.as_raw() {
+            let ok = fs::video_preview::start(
+                isize::from(h.hwnd),
+                (
+                    card_x as i32,
+                    content_y as i32,
+                    card_w as i32,
+                    content_h as i32,
+                ),
+                &path,
+            );
+            if !ok {
+                ui.global::<AppState>()
+                    .set_status_text("视频播放启动失败（编解码器不支持）".into());
+            }
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn start_video_preview(_ui: &MainWindow, _path: &str) {}
 
 /// 弹出系统「打开方式」对话框（取宿主 HWND 后调用 SHOpenWithDialog）。
 #[cfg(windows)]

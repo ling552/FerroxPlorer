@@ -615,6 +615,10 @@ pub fn update_selection_pane(ui: &MainWindow, core: &AppCore, right: bool) {
             // 切换选中项时重置文件夹大小计算状态：新文件夹需重新点「计算」
             state.set_sel_size_calculating(false);
             state.set_sel_path(e.path.clone().into());
+            // 设置开启「计算文件夹大小」时选中即自动后台统计（大文件夹期间显示"计算中"）
+            if e.is_dir && core.config.settings.calc_folder_size {
+                state.invoke_calculate_folder_size();
+            }
             state.set_sel_name(e.name.clone().into());
             state.set_sel_kind(e.kind.clone().into());
             let loc = Path::new(&e.path)
@@ -1325,7 +1329,8 @@ fn fill_signature(state: &AppState, path: &Path, is_dir: bool) {
 }
 
 /// Quick Look 大图提取尺寸（图片预览用，比列表缩略图更大更清晰）
-const QL_IMAGE_SIZE: u32 = 512;
+// 预览位图提取上限：更高的源分辨率让滚轮放大查看时保持清晰
+const QL_IMAGE_SIZE: u32 = 1600;
 
 /// 填充 Quick Look 预览内容：根据选中项类型设置 ql-* 属性。
 /// `right` 为真时预览右侧面板的选中项（双面板右侧活动）。
@@ -1346,9 +1351,12 @@ pub fn fill_quicklook(ui: &MainWindow, core: &AppCore, right: bool) -> bool {
     state.set_ql_kind(kind.code());
     state.set_ql_name(e.name.clone().into());
     state.set_ql_icon_class(e.icon_class.clone().into());
-    // 默认清空上一次的图片，避免切换文件时残留旧图
+    // 默认清空上一次的图片/文本，避免切换文件时残留旧内容
     state.set_ql_has_image(false);
     state.set_ql_text("".into());
+    state.set_ql_code_kw("".into());
+    state.set_ql_code_str("".into());
+    state.set_ql_code_cmt("".into());
     state.set_ql_info("".into());
     // 条目的真实缩略图/系统图标（取对应面板列表模型已生成的位图），头部与大图标优先显示
     let model = if right {
@@ -1371,21 +1379,65 @@ pub fn fill_quicklook(ui: &MainWindow, core: &AppCore, right: bool) -> bool {
 
     match kind {
         PreviewKind::Image => {
-            state.set_ql_subtitle(size_text.into());
-            // 复用缩略图提取，按更大尺寸取清晰位图
+            // 真实像素尺寸：仅解析文件头，不解码整图
+            let (iw, ih) = imagesize::size(path)
+                .map(|d| (d.width as i32, d.height as i32))
+                .unwrap_or((0, 0));
+            // 复用缩略图提取，按更大尺寸取清晰位图（缩放查看时仍然清晰）
             #[cfg(windows)]
             if let Some(icon) = crate::fs::thumbnail::extract(&e.path, QL_IMAGE_SIZE)
                 .map(|(pixels, w, h)| crate::fs::thumbnail::IconPixels { pixels, w, h })
             {
+                // 文件头解析失败（如损坏/罕见格式）时回退位图自身尺寸
+                let (iw, ih) = if iw > 0 {
+                    (iw, ih)
+                } else {
+                    (icon.w as i32, icon.h as i32)
+                };
+                state.set_ql_img_w(iw);
+                state.set_ql_img_h(ih);
+                state.set_ql_subtitle(
+                    format!(
+                        "{}×{} 像素 · {}",
+                        iw,
+                        ih,
+                        metadata::human_size(e.size_bytes)
+                    )
+                    .into(),
+                );
                 state.set_ql_image(image_from(&icon));
                 state.set_ql_has_image(true);
+            } else {
+                state.set_ql_img_w(iw);
+                state.set_ql_img_h(ih);
+                state.set_ql_subtitle(size_text.into());
+            }
+            #[cfg(not(windows))]
+            {
+                state.set_ql_img_w(iw);
+                state.set_ql_img_h(ih);
+                state.set_ql_subtitle(size_text.into());
             }
         }
         PreviewKind::Text => {
             state.set_ql_subtitle(size_text.into());
-            // 读取首部 64KB 文本
+            // 读取首部 64KB 文本并按扩展名做分层语法高亮
             let text = preview::read_text_head(path, 64 * 1024);
-            state.set_ql_text(text.into());
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let layers = crate::fs::highlight::highlight(&text, &ext);
+            state.set_ql_text(layers.base.into());
+            state.set_ql_code_kw(layers.keywords.into());
+            state.set_ql_code_str(layers.strings.into());
+            state.set_ql_code_cmt(layers.comments.into());
+        }
+        PreviewKind::Video => {
+            // 视频：内容由 Media Foundation 子窗口渲染（main.rs 打开预览时启动），
+            // 这里只填标题信息
+            state.set_ql_subtitle(size_text.into());
         }
         PreviewKind::Folder => {
             let (dirs, files, fsize) = preview::folder_summary(path);

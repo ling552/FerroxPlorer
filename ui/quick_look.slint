@@ -89,13 +89,32 @@ export component QuickLook inherits Rectangle {
                 background: Theme.surface-2;
                 clip: true;
 
-                // 图片预览（ql-kind == 1）
-                if AppState.ql-kind == 1: Rectangle {
+                // 图片预览（ql-kind == 1）：按真实像素显示，滚轮缩放、拖动查看
+                if AppState.ql-kind == 1: img-area := Rectangle {
+                    clip: true;
+                    // 自适应初始缩放：能放下就 1:1（小图不放大），放不下缩小到刚好容纳
+                    property <float> fit-zoom: min(1.0, min(
+                        (self.width - 24px) / max(1px, AppState.ql-img-w * 1px),
+                        (self.height - 24px) / max(1px, AppState.ql-img-h * 1px)));
+                    // 手动缩放倍率；<=0 表示未手动调整（跟随自适应）
+                    property <float> user-zoom: 0;
+                    property <float> zoom: img-area.user-zoom > 0 ? img-area.user-zoom : img-area.fit-zoom;
+                    // 拖动偏移与可拖范围（图片超出可视区的一半；不超出时钉在中心）
+                    property <length> off-x: 0px;
+                    property <length> off-y: 0px;
+                    property <length> max-off-x: max(0px, (AppState.ql-img-w * 1px * img-area.zoom - self.width) / 2);
+                    property <length> max-off-y: max(0px, (AppState.ql-img-h * 1px * img-area.zoom - self.height) / 2);
+                    // 切换到另一张图片时重置缩放与偏移
+                    property <string> cur-img: AppState.ql-name;
+                    changed cur-img => { self.user-zoom = 0; self.off-x = 0px; self.off-y = 0px; }
+
                     if AppState.ql-has-image: Image {
-                        width: parent.width - 24px;
-                        height: parent.height - 24px;
+                        x: (img-area.width - self.width) / 2 + clamp(img-area.off-x, -img-area.max-off-x, img-area.max-off-x);
+                        y: (img-area.height - self.height) / 2 + clamp(img-area.off-y, -img-area.max-off-y, img-area.max-off-y);
+                        width: max(1px, AppState.ql-img-w * 1px * img-area.zoom);
+                        height: max(1px, AppState.ql-img-h * 1px * img-area.zoom);
                         source: AppState.ql-image;
-                        image-fit: contain;
+                        image-fit: fill;
                     }
                     if !AppState.ql-has-image: Text {
                         text: "正在生成预览…";
@@ -104,19 +123,111 @@ export component QuickLook inherits Rectangle {
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
+
+                    // 拖动 + 滚轮缩放交互层
+                    if AppState.ql-has-image: TouchArea {
+                        mouse-cursor: self.pressed ? MouseCursor.grabbing : MouseCursor.grab;
+                        property <length> press-off-x: 0px;
+                        property <length> press-off-y: 0px;
+                        pointer-event(ev) => {
+                            if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
+                                self.press-off-x = img-area.off-x;
+                                self.press-off-y = img-area.off-y;
+                            }
+                        }
+                        moved => {
+                            img-area.off-x = clamp(self.press-off-x + (self.mouse-x - self.pressed-x), -img-area.max-off-x, img-area.max-off-x);
+                            img-area.off-y = clamp(self.press-off-y + (self.mouse-y - self.pressed-y), -img-area.max-off-y, img-area.max-off-y);
+                        }
+                        scroll-event(ev) => {
+                            // 滚轮缩放（5%..800%），缩放中心为视图中心
+                            img-area.user-zoom = clamp(img-area.zoom * (ev.delta-y > 0 ? 1.15 : 1 / 1.15), 0.05, 8.0);
+                            return accept;
+                        }
+                    }
+
+                    // 缩放百分比角标
+                    if AppState.ql-has-image: Rectangle {
+                        x: parent.width - self.width - 10px;
+                        y: 10px;
+                        width: zoom-label.preferred-width + 16px;
+                        height: 24px;
+                        border-radius: 7px;
+                        background: #00000066;
+                        zoom-label := Text {
+                            width: 100%;
+                            height: 100%;
+                            text: round(img-area.zoom * 100) + "%";
+                            color: white;
+                            font-size: Theme.fs-tiny;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
                 }
 
-                // 文本预览（ql-kind == 2）
+                // 文本/代码预览（ql-kind == 2）：四层等宽字体原位叠加实现语法高亮
+                // （Slint Text 不支持富文本；层与层逐字符对齐，禁用换行保证列不漂移）
                 if AppState.ql-kind == 2: ScrollView {
                     VerticalLayout {
                         padding: 16px;
-                        Text {
-                            text: AppState.ql-text;
-                            font-size: Theme.fs-small;
-                            font-family: "Consolas";
-                            color: Theme.text;
-                            wrap: word-wrap;
+                        Rectangle {
+                            width: max(code-base.preferred-width, 1px);
+                            height: max(code-base.preferred-height, 1px);
+                            // 注释层（绿）
+                            Text {
+                                x: 0; y: 0; width: 100%; height: 100%;
+                                text: AppState.ql-code-cmt;
+                                font-size: Theme.fs-small;
+                                font-family: "Consolas";
+                                color: Theme.dark ? #6A9955 : #008000;
+                                horizontal-alignment: left;
+                                vertical-alignment: top;
+                            }
+                            // 字符串层（橙/深红）
+                            Text {
+                                x: 0; y: 0; width: 100%; height: 100%;
+                                text: AppState.ql-code-str;
+                                font-size: Theme.fs-small;
+                                font-family: "Consolas";
+                                color: Theme.dark ? #CE9178 : #A31515;
+                                horizontal-alignment: left;
+                                vertical-alignment: top;
+                            }
+                            // 关键字与数字层（蓝）
+                            Text {
+                                x: 0; y: 0; width: 100%; height: 100%;
+                                text: AppState.ql-code-kw;
+                                font-size: Theme.fs-small;
+                                font-family: "Consolas";
+                                color: Theme.dark ? #569CD6 : #0000FF;
+                                horizontal-alignment: left;
+                                vertical-alignment: top;
+                            }
+                            // 正文层
+                            code-base := Text {
+                                x: 0; y: 0; width: 100%; height: 100%;
+                                text: AppState.ql-text;
+                                font-size: Theme.fs-small;
+                                font-family: "Consolas";
+                                color: Theme.text;
+                                horizontal-alignment: left;
+                                vertical-alignment: top;
+                            }
                         }
+                    }
+                }
+
+                // 视频预览（ql-kind == 4）：黑底衬托；画面由 Media Foundation
+                // 子窗口覆盖渲染（含音频），本层只作背景与启动提示
+                if AppState.ql-kind == 4: Rectangle {
+                    background: black;
+                    Text {
+                        text: "正在启动播放…";
+                        font-size: Theme.fs-body;
+                        color: #9aa7b5;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
                     }
                 }
 
@@ -169,7 +280,9 @@ export component QuickLook inherits Rectangle {
                 background: Theme.surface;
                 Rectangle { y: 0; height: 1px; background: Theme.border; }
                 Text {
-                    text: "按 空格 或 Esc 关闭预览";
+                    text: AppState.ql-kind == 1
+                        ? "滚轮缩放 · 拖动查看 · 按 空格 或 Esc 关闭"
+                        : "按 空格 或 Esc 关闭预览";
                     font-size: Theme.fs-tiny;
                     color: Theme.muted;
                     horizontal-alignment: center;

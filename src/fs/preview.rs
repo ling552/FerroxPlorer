@@ -14,19 +14,22 @@ pub enum PreviewKind {
     Text,
     /// 文件夹：统计顶层项数与大小
     Folder,
+    /// 视频：内嵌播放（Media Foundation 子窗口渲染，含音频）
+    Video,
     /// 其它：仅展示图标与基础信息
     Info,
 }
 
 impl PreviewKind {
     /// 传给 Slint 的整型编码（与 quick_look.slint 约定一致）
-    /// 0 信息 / 1 图片 / 2 文本 / 3 文件夹
+    /// 0 信息 / 1 图片 / 2 文本 / 3 文件夹 / 4 视频
     pub fn code(self) -> i32 {
         match self {
             PreviewKind::Info => 0,
             PreviewKind::Image => 1,
             PreviewKind::Text => 2,
             PreviewKind::Folder => 3,
+            PreviewKind::Video => 4,
         }
     }
 }
@@ -34,6 +37,11 @@ impl PreviewKind {
 /// 可作为图片大图预览的扩展名（与缩略图提取能力一致）
 const IMAGE_EXTS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff", "ico",
+];
+
+/// 可内嵌播放的视频扩展名（Media Foundation 支持的常见容器）
+const VIDEO_EXTS: &[&str] = &[
+    "mp4", "mov", "avi", "mkv", "wmv", "m4v", "webm", "mpg", "mpeg",
 ];
 
 /// 可作为纯文本预览的扩展名（含常见源码 / 配置 / 文档）
@@ -104,6 +112,8 @@ pub fn kind_of(path: &Path, is_dir: bool) -> PreviewKind {
     let ext = ext_of(path);
     if IMAGE_EXTS.contains(&ext.as_str()) {
         PreviewKind::Image
+    } else if VIDEO_EXTS.contains(&ext.as_str()) {
+        PreviewKind::Video
     } else if TEXT_EXTS.contains(&ext.as_str()) {
         PreviewKind::Text
     } else {
