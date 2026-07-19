@@ -154,3 +154,98 @@ pub fn show(paths: &[String], hwnd_isize: isize, screen_x: i32, screen_y: i32) -
 pub fn show(_paths: &[String], _hwnd_isize: isize, _screen_x: i32, _screen_y: i32) -> bool {
     false
 }
+
+/// 在屏幕坐标弹出目录「背景」右键菜单（资源管理器空白处菜单：查看/排序/新建/粘贴等）。
+/// `dir` 为当前浏览目录；返回是否执行了某条命令（供调用方刷新视图）。
+#[cfg(windows)]
+pub fn show_background(dir: &str, hwnd_isize: isize, screen_x: i32, screen_y: i32) -> bool {
+    use windows::core::{PCSTR, PCWSTR};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, COINIT_APARTMENTTHREADED};
+    use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+    use windows::Win32::UI::Shell::{
+        IContextMenu, IShellFolder, SHBindToObject, SHParseDisplayName, CMINVOKECOMMANDINFO,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreatePopupMenu, DestroyMenu, GetMenuItemCount, TrackPopupMenuEx, SW_SHOWNORMAL,
+        TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    };
+
+    const CMF_NORMAL: u32 = 0x0000_0000;
+    const ID_CMD_FIRST: u32 = 1;
+    const ID_CMD_LAST: u32 = 0x7FFF;
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let hwnd = HWND(hwnd_isize as *mut core::ffi::c_void);
+
+        // 目录路径 → 绝对 PIDL → 绑定该目录自身的 IShellFolder
+        let wide: Vec<u16> = dir.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut();
+        if SHParseDisplayName(PCWSTR(wide.as_ptr()), None, &mut pidl, 0, None).is_err()
+            || pidl.is_null()
+        {
+            return false;
+        }
+        let folder: Result<IShellFolder, _> = SHBindToObject(None, pidl, None);
+        let folder = match folder {
+            Ok(f) => f,
+            Err(_) => {
+                CoTaskMemFree(Some(pidl as *const _));
+                return false;
+            }
+        };
+
+        // 目录视图背景菜单对象（与资源管理器空白处右键一致）
+        let ctx_menu: IContextMenu = match folder.CreateViewObject(hwnd) {
+            Ok(cm) => cm,
+            Err(_) => {
+                CoTaskMemFree(Some(pidl as *const _));
+                return false;
+            }
+        };
+
+        let Ok(hmenu) = CreatePopupMenu() else {
+            CoTaskMemFree(Some(pidl as *const _));
+            return false;
+        };
+        let hr = ctx_menu.QueryContextMenu(hmenu, 0, ID_CMD_FIRST, ID_CMD_LAST, CMF_NORMAL);
+        if hr.is_err() || GetMenuItemCount(Some(hmenu)) <= 0 {
+            let _ = DestroyMenu(hmenu);
+            CoTaskMemFree(Some(pidl as *const _));
+            return false;
+        }
+
+        let cmd = TrackPopupMenuEx(
+            hmenu,
+            (TPM_LEFTALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD).0,
+            screen_x,
+            screen_y,
+            hwnd,
+            None,
+        );
+
+        let mut invoked = false;
+        if cmd.0 != 0 {
+            let verb_id = (cmd.0 as u32) - ID_CMD_FIRST;
+            let mut info = CMINVOKECOMMANDINFO {
+                cbSize: std::mem::size_of::<CMINVOKECOMMANDINFO>() as u32,
+                hwnd,
+                lpVerb: PCSTR(verb_id as usize as *const u8),
+                nShow: SW_SHOWNORMAL.0,
+                ..Default::default()
+            };
+            let _ = ctx_menu.InvokeCommand(&mut info);
+            invoked = true;
+        }
+
+        let _ = DestroyMenu(hmenu);
+        CoTaskMemFree(Some(pidl as *const _));
+        invoked
+    }
+}
+
+#[cfg(not(windows))]
+pub fn show_background(_dir: &str, _hwnd_isize: isize, _screen_x: i32, _screen_y: i32) -> bool {
+    false
+}

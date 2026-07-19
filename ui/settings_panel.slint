@@ -143,6 +143,10 @@ component Dropdown inherits Rectangle {
         x: 0px;
         y: root.height + 4px;
         width: root.box-w;
+        // 默认 close-on-click 策略下，点击选项时弹窗先行关闭、内部 TouchArea 的
+        // clicked 可能不触发（设置"有时不生效"的根因）。改为仅点击外部关闭，
+        // 选中后由回调显式 close，保证 selected 必然派发。
+        close-policy: PopupClosePolicy.close-on-click-outside;
         Rectangle {
             background: Theme.surface;
             border-radius: 8px;
@@ -176,7 +180,7 @@ component Dropdown inherits Rectangle {
                     }
                     ot := TouchArea {
                         mouse-cursor: pointer;
-                        clicked => { root.selected(opt); }
+                        clicked => { root.selected(opt); pop.close(); }
                     }
                 }
             }

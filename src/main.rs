@@ -1076,6 +1076,34 @@ fn palette_all_commands() -> Vec<(
             "",
             "add-network-location",
         ),
+        (
+            "\u{EC50}",
+            "打开此电脑",
+            "查看全部驱动器与设备",
+            "",
+            "nav:this-pc://",
+        ),
+        (
+            "\u{E74D}",
+            "打开回收站",
+            "查看与恢复已删除项目",
+            "",
+            "nav:recycle://",
+        ),
+        (
+            "\u{E710}",
+            "新建标签页",
+            "按设置的默认位置打开新标签",
+            "Ctrl+T",
+            "new-tab",
+        ),
+        (
+            "\u{E8C8}",
+            "复制当前路径",
+            "把当前目录完整路径复制到剪贴板",
+            "",
+            "copy-cwd",
+        ),
     ]
 }
 
@@ -1159,7 +1187,7 @@ fn bind_command_palette(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         }
     });
 
-    // 执行：cd: 前缀跳转目录，其余分发到对应 AppState 回调
+    // 执行：cd:/nav: 前缀跳转，其余分发到对应 AppState 回调
     let w = ui.as_weak();
     let c = core.clone();
     state.on_palette_run(move |action| {
@@ -1169,6 +1197,11 @@ fn bind_command_palette(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             let a = action.to_string();
             if let Some(path) = a.strip_prefix("cd:") {
                 navigate_to(&ui, &c, PathBuf::from(path));
+                return;
+            }
+            // nav: 前缀：虚拟路径（此电脑/回收站等）走通用导航回调
+            if let Some(vpath) = a.strip_prefix("nav:") {
+                st.invoke_navigate(vpath.into());
                 return;
             }
             match a.as_str() {
@@ -1182,6 +1215,7 @@ fn bind_command_palette(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                 "go-forward" => st.invoke_go_forward(),
                 "new-folder" => st.invoke_new_folder(),
                 "new-file" => st.invoke_new_file(),
+                "new-tab" => st.invoke_new_tab(),
                 "settings" => st.invoke_open_settings_tab(),
                 "toggle-hidden" => {
                     let cur = st.get_set_show_hidden();
@@ -1189,6 +1223,17 @@ fn bind_command_palette(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                 }
                 "add-network-location" => {
                     st.set_netloc_dialog_open(true);
+                }
+                "copy-cwd" => {
+                    let cwd = c
+                        .borrow()
+                        .active_tab()
+                        .history
+                        .current()
+                        .to_string_lossy()
+                        .to_string();
+                    fs::clipboard::set_text(&cwd);
+                    st.set_status_text("已复制当前路径".into());
                 }
                 _ => {}
             }
@@ -2826,9 +2871,36 @@ fn bind_context_menu_ext(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             if paths.is_empty() {
                 return;
             }
-            // 弹出原生菜单（阻塞至用户选择/关闭）；若执行了命令（删除/重命名/粘贴等），
-            // 刷新活动面板使视图与磁盘状态保持一致。
+            // 弹出原生菜单（阻塞至用户选择/关闭）；若执行了命令（删除/重命名/粘贴/
+            // 打开方式改默认应用等），清空图标缓存并刷新活动面板：
+            // 文件类型关联可能已变化，旧缓存图标必须失效才能实时反映新默认应用。
             let invoked = show_system_context_menu(&ui, &paths, mx, my);
+            if invoked {
+                fs::thumbnail::clear_all_caches();
+                reload_active_pane(&ui, &c);
+            }
+        }
+    });
+
+    // 弹出目录「背景」系统右键菜单（空白处：查看/排序/新建/粘贴等）
+    let w = ui.as_weak();
+    let c = core.clone();
+    state.on_show_system_background_menu(move |mx, my| {
+        if let Some(ui) = w.upgrade() {
+            let right = toolbar_routes_right(&ui);
+            let dir = {
+                let core = c.borrow();
+                core.pane(right)
+                    .history
+                    .current()
+                    .to_string_lossy()
+                    .to_string()
+            };
+            // 虚拟路径（此电脑/回收站/标签等）没有对应的 Shell 目录背景菜单
+            if fs::virtualfs::is_virtual(&dir) {
+                return;
+            }
+            let invoked = show_system_background_menu(&ui, &dir, mx, my);
             if invoked {
                 reload_active_pane(&ui, &c);
             }
@@ -2903,6 +2975,37 @@ fn show_system_context_menu(ui: &MainWindow, paths: &[String], mx: f32, my: f32)
 
 #[cfg(not(windows))]
 fn show_system_context_menu(_ui: &MainWindow, _paths: &[String], _mx: f32, _my: f32) -> bool {
+    false
+}
+
+/// 把窗口内逻辑坐标换算为屏幕物理坐标，弹出目录背景系统菜单（空白处右键）。
+#[cfg(windows)]
+fn show_system_background_menu(ui: &MainWindow, dir: &str, mx: f32, my: f32) -> bool {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let dir = dir.to_string();
+    let mut invoked = false;
+    ui.window().with_winit_window(|winit_window| {
+        let origin = match winit_window.inner_position() {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        let scale = winit_window.scale_factor() as f32;
+        let screen_x = origin.x + (mx * scale).round() as i32;
+        let screen_y = origin.y + (my * scale).round() as i32;
+        let Ok(handle) = winit_window.window_handle() else {
+            return;
+        };
+        if let RawWindowHandle::Win32(h) = handle.as_raw() {
+            let hwnd_isize = isize::from(h.hwnd);
+            invoked = fs::shell_menu::show_background(&dir, hwnd_isize, screen_x, screen_y);
+        }
+    });
+    invoked
+}
+
+#[cfg(not(windows))]
+fn show_system_background_menu(_ui: &MainWindow, _dir: &str, _mx: f32, _my: f32) -> bool {
     false
 }
 
@@ -3551,7 +3654,9 @@ fn bind_hash(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         fs::clipboard::set_text(text.as_str());
     });
 
-    // 「打开方式 - 更改」：弹出系统「打开方式」对话框
+    // 「打开方式 - 更改」：弹出系统「打开方式」对话框。
+    // 对话框模态返回后用户可能已更改默认应用：文件类型关联图标与「打开方式」
+    // 程序名都已变化，清空图标缓存并刷新视图，立即反映新默认应用。
     let c = core.clone();
     let w = ui.as_weak();
     state.on_open_with_dialog(move || {
@@ -3567,6 +3672,10 @@ fn bind_hash(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             };
             if let Some(path) = path {
                 show_open_with_dialog(&ui, &path);
+                // 旧关联图标全部失效；重载目录按新关联重新提取图标，
+                // 详情栏「打开方式」行也随 update_selection 一起刷新
+                fs::thumbnail::clear_all_caches();
+                reload_active_pane(&ui, &c);
             }
         }
     });

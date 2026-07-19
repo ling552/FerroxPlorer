@@ -774,9 +774,20 @@ pub fn build_sidebar(
             p.map(|p| (p.to_string_lossy().trim_end_matches('\\').to_lowercase(), g))
         })
         .collect();
-        // 把节点改为专属 glyph 图标：即使系统图标模式也强制使用
-        // （系统模式提取到的常是普通文件夹位图，无法体现桌面/下载等专属含义）
+        // 已知系统文件夹的图标策略：
+        // - 系统图标模式：按路径提取 Shell 专属图标（桌面/下载/文档等在系统中带标识），
+        //   与资源管理器显示一致；提取失败回退 MDL2 glyph
+        // - 内置图标模式：MDL2 字体 glyph（现有内置样式）
         let glyphize = |mut item: NavItem, glyph: &str| {
+            if system_icons {
+                if let Some(ic) =
+                    crate::fs::thumbnail::special_dir_icon_cached(item.path.as_str(), THUMB_SIZE)
+                {
+                    item.thumb = image_from(&ic);
+                    item.has_thumb = true;
+                    return item;
+                }
+            }
             item.icon = glyph.into();
             item.icon_class = "qa-glyph".into();
             item.has_thumb = false;

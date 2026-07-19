@@ -354,6 +354,9 @@ export component MainWindow inherits Window {
                                         if (AppState.set-context-menu-system) {
                                             if (idx >= 0) {
                                                 AppState.show-system-menu(idx, mx + AppState.sidebar-w + 7px, my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h);
+                                            } else {
+                                                // 空白处：活动面板目录的系统背景菜单
+                                                AppState.show-system-background-menu(mx + AppState.sidebar-w + 7px, my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h);
                                             }
                                         } else {
                                         // 自定义右键菜单：target 属性按活动面板取对应 entries
@@ -382,7 +385,12 @@ export component MainWindow inherits Window {
                                         padding: 6px;
                                         ThisPcView {
                                             request-context-menu(idx, mx, my) => {
-                                                AppState.show-system-menu(idx, mx + AppState.sidebar-w + 7px + 6px, my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h + 6px);
+                                                if (idx >= 0) {
+                                                    AppState.show-system-menu(idx, mx + AppState.sidebar-w + 7px + 6px, my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h + 6px);
+                                                } else {
+                                                    // 空白处：虚拟目录无 Shell 背景菜单，Rust 侧静默忽略
+                                                    AppState.show-system-background-menu(mx + AppState.sidebar-w + 7px + 6px, my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h + 6px);
+                                                }
                                             }
                                         }
                                     }
@@ -393,9 +401,11 @@ export component MainWindow inherits Window {
                                         FileGrid {
                                             request-context-menu(idx, mx, my) => {
                                                 if (AppState.set-context-menu-system) {
-                                                    // 系统原生菜单（空白处不弹）
                                                     if (idx >= 0) {
                                                         AppState.show-system-menu(idx, mx + AppState.sidebar-w + 7px + 6px, my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h + 6px);
+                                                    } else {
+                                                        // 空白处：系统目录背景菜单（查看/排序/新建/粘贴等）
+                                                        AppState.show-system-background-menu(mx + AppState.sidebar-w + 7px + 6px, my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h + 6px);
                                                     }
                                                 } else {
                                                     // idx<0 为空白处右键→背景菜单；选中/清除已由 InputOverlay 处理
@@ -422,6 +432,9 @@ export component MainWindow inherits Window {
                                                     if (idx >= 0) {
                                                         // 40px = 内边距 6px + 表头行高 34px
                                                         AppState.show-system-menu(idx, mx + AppState.sidebar-w + 7px + 6px, my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h + 40px);
+                                                    } else {
+                                                        // 空白处：系统目录背景菜单（查看/排序/新建/粘贴等）
+                                                        AppState.show-system-background-menu(mx + AppState.sidebar-w + 7px + 6px, my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h + 40px);
                                                     }
                                                 } else {
                                                     // idx<0 为空白处右键→背景菜单；选中/清除已由 InputOverlay 处理
@@ -527,9 +540,11 @@ export component MainWindow inherits Window {
     cmd-palette := CommandPalette {
         open <=> AppState.command-palette-open;
         commands: AppState.palette-commands;
-        selected-index: AppState.palette-selected;
+        selected-index <=> AppState.palette-selected;
         query-changed(t) => { AppState.palette-query(t); }
         execute-command(action) => { AppState.palette-run(action); }
+        // 关闭后把键盘焦点还给全局快捷键作用域（LineEdit 曾夺走焦点）
+        changed open => { if (!self.open) { key-scope.focus(); } }
     }
 
     // 浮层：进度卡片（绑定真实后台任务状态）

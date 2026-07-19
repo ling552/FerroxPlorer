@@ -349,6 +349,8 @@ export global AppState {
     in-out property <bool> can-paste: false;
     // 弹出 Windows 原生 Shell 右键菜单（参数：目标下标、窗口内像素坐标 x/y）
     callback show-system-menu(int, length, length);
+    // 弹出系统目录「背景」右键菜单（空白处：查看/排序/新建/粘贴等），参数为窗口内坐标
+    callback show-system-background-menu(length, length);
     // 固定到快速访问（参数：目标下标；仅文件夹有效）
     callback pin-to-quick-access(int);
 

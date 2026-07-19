@@ -108,9 +108,12 @@ export component FileIcon inherits Rectangle {
     // 缩略图/系统图标位图：has-thumb 为真时直接渲染位图，覆盖矢量图形
     in property <image> thumb;
     in property <bool> has-thumb: false;
+    // 系统图标位图（盘符/文件夹/文件类型图标）本身自带形状与透明背景，
+    // 圆角裁切会切掉边角；仅真实内容缩略图（图片/视频首帧）保留圆角
+    property <bool> round-thumb: icon-class == "image" || icon-class == "video";
     width: box;
     height: box;
-    border-radius: radius;
+    border-radius: root.has-thumb ? (root.round-thumb ? radius : 0px) : radius;
     border-width: 1px;
     border-color: root.has-thumb ? transparent
         : root.compact ? transparent : (Theme.dark ? #00000033 : #005aa01f);

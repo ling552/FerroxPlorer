@@ -59,6 +59,9 @@ export component CommandPalette inherits Rectangle {
                             placeholder-text: "输入命令或路径...";
                             font-size: 16px;
                             horizontal-stretch: 1;
+                            // 面板由 if open 条件实例化：每次打开都重建本元素，
+                            // init 聚焦让 Ctrl+P 后直接可输入，无需再点一次输入框
+                            init => { self.focus(); }
                             edited(t) => { root.query-changed(t); }
                             // 回车执行当前选中项（默认首个匹配；鼠标悬停/键盘上下可改选中项）
                             accepted => {

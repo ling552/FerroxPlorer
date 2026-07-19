@@ -224,6 +224,40 @@ pub fn load_cached(_path: &str, _is_dir: bool, _mtime: i64, _size: u32) -> Optio
     None
 }
 
+/// 按"具体路径"提取特殊系统文件夹（桌面/下载/文档等）的专属图标。
+/// 普通文件夹走 DIR_KEY 类型缓存共享同一张通用图标；这些已知文件夹在
+/// Shell 中有带标识的专属图标，须以路径为键单独提取与缓存。
+#[cfg(windows)]
+pub fn special_dir_icon_cached(path: &str, size: u32) -> Option<Arc<IconPixels>> {
+    let key = format!("{}|specialdir", path);
+    if let Some(c) = path_cache().lock().ok()?.get(&key).cloned() {
+        return Some(c);
+    }
+    let (pixels, w, h) = extract(path, size)?;
+    let arc = Arc::new(IconPixels { pixels, w, h });
+    if let Ok(mut c) = path_cache().lock() {
+        c.insert(key, arc.clone());
+    }
+    Some(arc)
+}
+
+#[cfg(not(windows))]
+pub fn special_dir_icon_cached(_path: &str, _size: u32) -> Option<Arc<IconPixels>> {
+    None
+}
+
+/// 清空全部图标缓存（类型缓存 + 路径缓存）。
+/// 用户在系统「打开方式」对话框更改默认应用后调用：文件类型关联图标已变，
+/// 旧缓存必须失效，随后重载目录即可显示新图标。
+pub fn clear_all_caches() {
+    if let Ok(mut c) = type_cache().lock() {
+        c.clear();
+    }
+    if let Ok(mut c) = path_cache().lock() {
+        c.clear();
+    }
+}
+
 /// 提取指定路径的缩略图/图标，返回 (RGBA 像素, 宽, 高)。
 /// `size` 为期望的方形边长（像素）。失败返回 None。
 #[cfg(windows)]
