@@ -1462,7 +1462,7 @@ dependencies = [
 
 [[package]]
 name = "ferroxplorer"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -1478,6 +1478,7 @@ dependencies = [
  "notify",
  "open",
  "png 0.17.16",
+ "pulldown-cmark 0.12.2",
  "raw-window-handle",
  "serde",
  "serde_json",
@@ -1489,7 +1490,9 @@ dependencies = [
  "tar",
  "toml 0.8.23",
  "ureq",
+ "webview2-com",
  "windows 0.59.0",
+ "windows-core 0.59.0",
  "windows-sys 0.59.0",
  "winit",
  "winreg",
@@ -2149,7 +2152,7 @@ dependencies = [
  "derive_more",
  "fontique",
  "htmlparser",
- "pulldown-cmark",
+ "pulldown-cmark 0.13.4",
  "skrifa 0.40.0",
 ]
 
@@ -4070,6 +4073,18 @@ checksum = "4488a4a36b9a4ba6b9334a32a39971f77c1436ec82c38707bce707699cc3bbcb"
 dependencies = [
  "quote",
  "syn",
+]
+
+[[package]]
+name = "pulldown-cmark"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f86ba2052aebccc42cbbb3ed234b8b13ce76f75c3551a303cb2bcffcff12bb14"
+dependencies = [
+ "bitflags 2.13.0",
+ "memchr",
+ "pulldown-cmark-escape",
+ "unicase",
 ]
 
 [[package]]
@@ -6046,6 +6061,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "webview2-com"
+version = "0.35.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1730fcfc2f6b32d92096f5e97bc2b5ccafe14ad9d4787ef106daab2a20896def"
+dependencies = [
+ "webview2-com-macros",
+ "webview2-com-sys",
+ "windows 0.59.0",
+ "windows-core 0.59.0",
+ "windows-implement 0.59.0",
+ "windows-interface",
+]
+
+[[package]]
+name = "webview2-com-macros"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67a921c1b6914c367b2b823cd4cde6f96beec77d30a939c8199bb377cf9b9b54"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "webview2-com-sys"
+version = "0.35.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39cfcc1cdcddbb723d5385f20d718a83ad2a1dc856de1a925358f2bdf5a58b93"
+dependencies = [
+ "thiserror 2.0.18",
+ "windows 0.59.0",
+ "windows-core 0.59.0",
+ "windows-targets 0.53.5",
 ]
 
 [[package]]

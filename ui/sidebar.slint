@@ -66,6 +66,14 @@ export component Sidebar inherits Rectangle {
                         tree-touch := TouchArea {
                             horizontal-stretch: 1;
                             clicked => { AppState.navigate(item.path); }
+                            // 右键：弹出系统菜单（此电脑 → Shell 命名空间映射由 Rust 端处理）
+                            pointer-event(ev) => {
+                                if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) {
+                                    AppState.show-system-menu-path(item.path,
+                                        self.absolute-position.x + self.mouse-x,
+                                        self.absolute-position.y + self.mouse-y);
+                                }
+                            }
                             Text {
                                 text: item.label;
                                 width: parent.width;
@@ -98,7 +106,17 @@ export component Sidebar inherits Rectangle {
                 if item.is-disk: Rectangle {
                     border-radius: Theme.radius-btn;
                     background: item.active ? Theme.primary-soft : (disk-touch.has-hover ? Theme.primary-hover : transparent);
-                    disk-touch := TouchArea { clicked => { AppState.navigate(item.path); } }
+                    disk-touch := TouchArea {
+                        clicked => { AppState.navigate(item.path); }
+                        // 右键：弹出该驱动器的系统菜单（格式化/属性/弹出等）
+                        pointer-event(ev) => {
+                            if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) {
+                                AppState.show-system-menu-path(item.path,
+                                    self.absolute-position.x + self.mouse-x,
+                                    self.absolute-position.y + self.mouse-y);
+                            }
+                        }
+                    }
                     HorizontalLayout {
                         padding: 8px; padding-left: 22px; spacing: 8px; alignment: start;
                         FileIcon {
@@ -124,7 +142,17 @@ export component Sidebar inherits Rectangle {
                 if !item.is-header && !item.is-tree && !item.is-disk && item.icon-class == "device": Rectangle {
                     border-radius: Theme.radius-btn;
                     background: item.active ? Theme.primary-soft : (dev-touch.has-hover ? Theme.primary-hover : transparent);
-                    dev-touch := TouchArea { clicked => { AppState.navigate(item.path); } }
+                    dev-touch := TouchArea {
+                        clicked => { AppState.navigate(item.path); }
+                        // 右键：便携设备为自定义 scheme，Rust 端会静默跳过不支持的项
+                        pointer-event(ev) => {
+                            if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) {
+                                AppState.show-system-menu-path(item.path,
+                                    self.absolute-position.x + self.mouse-x,
+                                    self.absolute-position.y + self.mouse-y);
+                            }
+                        }
+                    }
                     HorizontalLayout {
                         padding: 8px; padding-left: 22px; spacing: 8px; alignment: start;
                         FileIcon {
@@ -145,7 +173,18 @@ export component Sidebar inherits Rectangle {
                 if !item.is-header && !item.is-tree && !item.is-disk && item.icon-class != "device": Rectangle {
                     border-radius: Theme.radius-btn;
                     background: item.active ? Theme.primary-soft : (nav-touch.has-hover ? Theme.primary-hover : transparent);
-                    nav-touch := TouchArea { clicked => { AppState.navigate(item.path); } }
+                    nav-touch := TouchArea {
+                        clicked => { AppState.navigate(item.path); }
+                        // 右键：快速访问项是真实路径直接弹系统菜单；
+                        // 标签/回收站/网络等虚拟 scheme 由 Rust 端映射或跳过
+                        pointer-event(ev) => {
+                            if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) {
+                                AppState.show-system-menu-path(item.path,
+                                    self.absolute-position.x + self.mouse-x,
+                                    self.absolute-position.y + self.mouse-y);
+                            }
+                        }
+                    }
                     HorizontalLayout {
                         padding-left: 9px; padding-right: 9px; spacing: 8px;
                         // 系统图标模式：显示系统提取的文件夹图标

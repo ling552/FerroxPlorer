@@ -104,6 +104,15 @@ fn ext_of(path: &Path) -> String {
         .to_lowercase()
 }
 
+/// 是否支持「渲染视图」（WebView2 显示网页效果，与源码视图可切换）：
+/// Markdown 转 HTML 渲染；HTML/HTM 直接渲染；PHP 渲染其中的静态 HTML 部分
+pub fn renderable_web(path: &Path) -> bool {
+    matches!(
+        ext_of(path).as_str(),
+        "md" | "markdown" | "html" | "htm" | "php"
+    )
+}
+
 /// 判断给定路径的预览类型
 pub fn kind_of(path: &Path, is_dir: bool) -> PreviewKind {
     if is_dir {

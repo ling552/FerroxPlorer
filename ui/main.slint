@@ -133,6 +133,10 @@ export component MainWindow inherits Window {
             if (ev.modifiers.control && ev.text == "f") { AppState.set-omni-mode("search"); return accept; }
             if (ev.modifiers.control && ev.modifiers.shift && ev.text == "n") { AppState.new-folder(); return accept; }
             if (ev.modifiers.control && ev.text == "t") { AppState.new-tab(); return accept; }
+            // Ctrl+W 关闭当前标签页（快捷键页已宣称；关最后一个时由 Rust 端按设置决定是否退出）
+            if (ev.modifiers.control && ev.text == "w") { AppState.close-tab-at(AppState.active-tab); return accept; }
+            // F3 切换双面板（命令面板已宣称）
+            if (ev.text == Key.F3) { AppState.toggle-dual(); return accept; }
             return reject;
         }
 

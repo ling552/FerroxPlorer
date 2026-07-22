@@ -16,10 +16,11 @@ export component QuickLook inherits Rectangle {
         TouchArea { clicked => { AppState.close-quicklook(); } }
     }
 
-    // 预览卡片
+    // 预览卡片：尺寸由 Rust 按内容类型自适应计算（图片/视频按分辨率、
+    // 文件夹紧凑、网页渲染更大；最小 256×256 内容区）
     Rectangle {
-        width: 640px;
-        height: 560px;
+        width: AppState.ql-card-w;
+        height: AppState.ql-card-h;
         border-radius: Theme.radius-dialog;
         background: Theme.surface;
         border-width: 1px;
@@ -63,6 +64,45 @@ export component QuickLook inherits Rectangle {
                             overflow: elide;
                         }
                     }
+                    // 渲染/源码 视图切换（仅 Markdown/HTML/PHP 等可渲染文件显示）
+                    if AppState.ql-can-render: Rectangle {
+                        width: 116px; height: 30px;
+                        y: 4px;
+                        border-radius: 8px;
+                        background: Theme.surface-2;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        HorizontalLayout {
+                            padding: 2px;
+                            spacing: 2px;
+                            Rectangle {
+                                border-radius: 6px;
+                                background: AppState.ql-web-mode ? Theme.primary-soft : (render-btn.has-hover ? Theme.primary-hover : transparent);
+                                Text {
+                                    text: "渲染";
+                                    font-size: Theme.fs-tiny;
+                                    color: AppState.ql-web-mode ? Theme.primary : Theme.muted;
+                                    font-weight: AppState.ql-web-mode ? 700 : 400;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                render-btn := TouchArea { clicked => { AppState.ql-set-web-mode(true); } }
+                            }
+                            Rectangle {
+                                border-radius: 6px;
+                                background: !AppState.ql-web-mode ? Theme.primary-soft : (source-btn.has-hover ? Theme.primary-hover : transparent);
+                                Text {
+                                    text: "源码";
+                                    font-size: Theme.fs-tiny;
+                                    color: !AppState.ql-web-mode ? Theme.primary : Theme.muted;
+                                    font-weight: !AppState.ql-web-mode ? 700 : 400;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                source-btn := TouchArea { clicked => { AppState.ql-set-web-mode(false); } }
+                            }
+                        }
+                    }
                     // 关闭按钮（MDL2 图标，与标题栏风格一致）
                     Rectangle {
                         width: 30px; height: 30px;
@@ -89,13 +129,14 @@ export component QuickLook inherits Rectangle {
                 background: Theme.surface-2;
                 clip: true;
 
-                // 图片预览（ql-kind == 1）：按真实像素显示，滚轮缩放、拖动查看
+                // 图片预览（ql-kind == 1）：按真实像素显示，滚轮缩放、拖动查看。
+                // 卡片已按图片宽高比自适应，初始缩放正好铺满内容区无空白
                 if AppState.ql-kind == 1: img-area := Rectangle {
                     clip: true;
                     // 自适应初始缩放：能放下就 1:1（小图不放大），放不下缩小到刚好容纳
                     property <float> fit-zoom: min(1.0, min(
-                        (self.width - 24px) / max(1px, AppState.ql-img-w * 1px),
-                        (self.height - 24px) / max(1px, AppState.ql-img-h * 1px)));
+                        self.width / max(1px, AppState.ql-img-w * 1px),
+                        self.height / max(1px, AppState.ql-img-h * 1px)));
                     // 手动缩放倍率；<=0 表示未手动调整（跟随自适应）
                     property <float> user-zoom: 0;
                     property <float> zoom: img-area.user-zoom > 0 ? img-area.user-zoom : img-area.fit-zoom;
@@ -166,9 +207,22 @@ export component QuickLook inherits Rectangle {
                     }
                 }
 
-                // 文本/代码预览（ql-kind == 2）：四层等宽字体原位叠加实现语法高亮
+                // 网页渲染视图（ql-kind == 2 且渲染模式）：白底衬托；
+                // 页面由 WebView2 原生子窗口覆盖渲染，本层只作背景与加载提示
+                if AppState.ql-kind == 2 && AppState.ql-web-mode: Rectangle {
+                    background: white;
+                    Text {
+                        text: "正在加载渲染视图…";
+                        font-size: Theme.fs-body;
+                        color: #66707a;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // 文本/代码预览（ql-kind == 2 源码模式）：四层等宽字体原位叠加实现语法高亮
                 // （Slint Text 不支持富文本；层与层逐字符对齐，禁用换行保证列不漂移）
-                if AppState.ql-kind == 2: ScrollView {
+                if AppState.ql-kind == 2 && !AppState.ql-web-mode: ScrollView {
                     VerticalLayout {
                         padding: 16px;
                         Rectangle {

@@ -46,9 +46,22 @@ jobs:
             /DAppVersion=${{ steps.ver.outputs.version }} `
             installer\installer.iss
 
+      - name: 提取 tag 附注作为更新说明
+        id: notes
+        shell: bash
+        run: |
+          # 附注 tag 的正文（首行为标题，跳过）作为 Release 更新描述；
+          # 应用内「检查更新」对话框显示的即是该 body。轻量 tag 无正文时留空，
+          # 由 generate_release_notes 自动补全。
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}" 2>/dev/null || true
+          git tag -l --format='%(contents:body)' "${GITHUB_REF_NAME}" > release_notes.md
+          echo "打 tag 附注正文 $(wc -c < release_notes.md) 字节"
+
       - name: 创建 GitHub Release 并上传安装程序
         uses: softprops/action-gh-release@v2
         with:
           name: FerroxPlorer v${{ steps.ver.outputs.version }}
           files: installer/Output/FerroxPlorer-Setup-*.exe
+          body_path: release_notes.md
+          # tag 无附注正文时自动生成提交列表补全
           generate_release_notes: true

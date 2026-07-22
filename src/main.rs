@@ -1476,6 +1476,15 @@ fn load_right(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     ui.global::<AppState>().set_pane_drag_active(false);
     ui.invoke_clear_editing();
     let path = core.borrow().right_pane.history.current().clone();
+    // 虚拟路径（this-pc:// 等）无法作为右面板目录读取——启动目录为「此电脑」时
+    // 右面板与主面板同起点会落到虚拟路径，导致右面板空白并报错。回退到用户主目录。
+    let path = if fs::virtualfs::is_virtual(&path.to_string_lossy()) {
+        let home = home_start_path();
+        core.borrow_mut().right_pane.history.navigate(home.clone());
+        home
+    } else {
+        path
+    };
     let (show_hidden, folders_first) = {
         let c = core.borrow();
         (
@@ -2928,6 +2937,99 @@ fn bind_context_menu_ext(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         }
     });
 
+    // 按路径弹出系统右键菜单（侧边栏项：快速访问/磁盘/此电脑/回收站/网络等）。
+    // 虚拟 scheme 先映射为 Shell 命名空间解析名（::{CLSID}），无对应物的静默跳过。
+    let w = ui.as_weak();
+    let c = core.clone();
+    state.on_show_system_menu_path(move |path, mx, my| {
+        if let Some(ui) = w.upgrade() {
+            let path = path.to_string();
+            let target = if fs::virtualfs::is_virtual(&path) {
+                match path.as_str() {
+                    // 此电脑：可得「管理/映射网络驱动器/属性」等菜单
+                    "this-pc://" => "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}".to_string(),
+                    // 回收站：可得「清空回收站/属性」
+                    "recycle://" => "::{645FF040-5081-101B-9F08-00AA002F954E}".to_string(),
+                    // 网络：Shell 网络命名空间
+                    "network://" => "::{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}".to_string(),
+                    // 标签/便携设备等应用内概念无系统菜单对应物：静默跳过
+                    _ => return,
+                }
+            } else {
+                if path.is_empty() {
+                    return;
+                }
+                path
+            };
+            let invoked = show_system_context_menu(&ui, &[target], mx, my);
+            if invoked {
+                // 菜单命令可能改变侧栏内容（取消固定/弹出设备/重命名卷标/清空回收站），
+                // 也可能删除了当前面板所在目录：重建侧栏 + 刷新 + 延迟补刷
+                fs::thumbnail::clear_all_caches();
+                reload_active_pane(&ui, &c);
+                {
+                    let c2 = c.borrow();
+                    ui.global::<AppState>()
+                        .set_nav_items(ui_bridge::build_sidebar(
+                            c2.active_tab().history.current(),
+                            &c2.collapsed_sections,
+                            &c2.config,
+                        ));
+                }
+                schedule_pane_reloads(&ui, &c, &[600, 2000]);
+            }
+        }
+    });
+
+    // OLE 拖出：把选中文件拖到其他应用（模态执行 DoDragDrop）。
+    // 借用纪律与 on_show_system_menu 一致：先收集路径、释放借用，再进模态循环。
+    let w = ui.as_weak();
+    let c = core.clone();
+    state.on_drag_out(move |pane, idx| {
+        if let Some(ui) = w.upgrade() {
+            let right = pane.as_str() == "right";
+            let paths: Vec<String> = {
+                let core = c.borrow();
+                let tab = core.pane(right);
+                let target_selected = tab.selected.get(idx as usize).copied().unwrap_or(false);
+                let raw: Vec<String> = if target_selected {
+                    core.pane_selected_paths(right)
+                        .iter()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .collect()
+                } else {
+                    core.pane_entry_at(right, idx as usize)
+                        .map(|e| vec![e.path.clone()])
+                        .unwrap_or_default()
+                };
+                // 过滤虚拟条目（标签/回收站视图等），仅真实文件系统路径可拖出
+                raw.into_iter()
+                    .filter(|p| !fs::virtualfs::is_virtual(p) && Path::new(p).exists())
+                    .collect()
+            };
+            let st = ui.global::<AppState>();
+            if paths.is_empty() {
+                st.set_pane_drag_active(false);
+                return;
+            }
+            // 模态 OLE 拖拽（阻塞至放下/取消）；期间左键 up 被 OLE 吃掉
+            let effect = fs::drag_out::run(&paths);
+            // 合成一次窗口外的左键释放，复位 Slint 指针抓取/按下状态
+            let _ = ui.window().try_dispatch_event(
+                slint::platform::WindowEvent::PointerReleased {
+                    position: slint::LogicalPosition::new(-10.0, -10.0),
+                    button: slint::platform::PointerEventButton::Left,
+                },
+            );
+            st.set_pane_drag_active(false);
+            // 目标应用执行「移动」时源文件将消失：刷新 + 延迟补刷（Shell 异步收尾）
+            if effect == 2 {
+                reload_active_pane(&ui, &c);
+                schedule_pane_reloads(&ui, &c, &[600, 2000]);
+            }
+        }
+    });
+
     // 固定到快速访问：调用系统 pintohome 动词写入真实快速访问，并刷新侧边栏
     let w = ui.as_weak();
     let c = core.clone();
@@ -3325,7 +3427,18 @@ fn bind_settings(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                 "restore-tabs" => st.set_set_restore_tabs(val),
                 "exit-last-tab" => st.set_set_exit_last_tab(val),
                 "show-details-default" => st.set_set_show_details_default(val),
-                "dual-default" => st.set_set_dual_default(val),
+                "dual-default" => {
+                    st.set_set_dual_default(val);
+                    // 即时生效：切换开关立刻进入/退出双面板（此前只回显，
+                    // 用户会误以为设置无效）；下次启动由 push_settings 按配置接管
+                    st.set_dual_pane(val);
+                    if val {
+                        load_right(&ui, &c);
+                    } else {
+                        // 关闭双面板时退出行内重命名，防 r-editing-index 残留锁死 InputOverlay
+                        ui.invoke_clear_editing();
+                    }
+                }
                 "live-filter" => st.set_set_live_filter(val),
                 "search-subfolders" => st.set_set_search_subfolders(val),
                 "case-sensitive" => st.set_set_case_sensitive(val),
@@ -3710,69 +3823,185 @@ fn bind_hash(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             if ui_bridge::fill_quicklook(&ui, &c.borrow(), right) {
                 let st = ui.global::<AppState>();
                 st.set_quicklook_open(true);
-                // 视频：在预览内容区之上启动 Media Foundation 子窗口播放（含音频）
+                let path = st.get_sel_path().to_string();
                 if st.get_ql_kind() == 4 {
-                    let path = st.get_sel_path().to_string();
+                    // 视频：在预览内容区之上启动 Media Foundation 子窗口播放（含音频）
+                    fs::web_preview::stop();
                     if !path.is_empty() {
                         start_video_preview(&ui, &path);
                     }
+                } else if st.get_ql_can_render() && st.get_ql_web_mode() {
+                    // Markdown/HTML/PHP：默认渲染视图（WebView2 子窗口覆盖内容区）
+                    fs::video_preview::stop();
+                    if !path.is_empty() {
+                        start_web_preview(&ui, &path);
+                    }
                 } else {
                     fs::video_preview::stop();
+                    fs::web_preview::stop();
                 }
             }
         }
     });
 
-    // 关闭 Quick Look：同时停止可能进行中的视频播放
+    // 关闭 Quick Look：同时停止可能进行中的视频播放与网页渲染
     let w = ui.as_weak();
     state.on_close_quicklook(move || {
         if let Some(ui) = w.upgrade() {
             fs::video_preview::stop();
+            fs::web_preview::stop();
             ui.global::<AppState>().set_quicklook_open(false);
         }
     });
-}
 
-/// 计算预览卡片内容区在窗口内的物理像素矩形并启动视频子窗口播放。
-/// 与 quick_look.slint 的布局约定保持一致：卡片 640×560 居中、头部 64、底部 38。
-#[cfg(windows)]
-fn start_video_preview(ui: &MainWindow, path: &str) {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    let path = path.to_string();
-    ui.window().with_winit_window(|winit_window| {
-        let scale = winit_window.scale_factor() as f32;
-        let size = winit_window.inner_size();
-        let (win_w, win_h) = (size.width as f32, size.height as f32);
-        let card_w = 640.0 * scale;
-        let card_h = 560.0 * scale;
-        let card_x = (win_w - card_w) / 2.0;
-        let card_y = (win_h - card_h) / 2.0;
-        let content_y = card_y + 64.0 * scale;
-        let content_h = card_h - (64.0 + 38.0) * scale;
-        let Ok(handle) = winit_window.window_handle() else {
-            return;
-        };
-        if let RawWindowHandle::Win32(h) = handle.as_raw() {
-            let ok = fs::video_preview::start(
-                isize::from(h.hwnd),
-                (
-                    card_x as i32,
-                    content_y as i32,
-                    card_w as i32,
-                    content_h as i32,
-                ),
-                &path,
-            );
-            if !ok {
-                ui.global::<AppState>()
-                    .set_status_text("视频播放启动失败（编解码器不支持）".into());
+    // 渲染/源码视图切换（Markdown/HTML/PHP）：启停 WebView2 子层并重算卡片尺寸
+    let w = ui.as_weak();
+    state.on_ql_set_web_mode(move |on| {
+        if let Some(ui) = w.upgrade() {
+            let st = ui.global::<AppState>();
+            if !st.get_ql_can_render() || st.get_ql_web_mode() == on {
+                return;
+            }
+            st.set_ql_web_mode(on);
+            ui_bridge::apply_ql_card_size(&ui, st.get_ql_kind(), 0, 0, on);
+            if on {
+                let path = st.get_sel_path().to_string();
+                if !path.is_empty() {
+                    start_web_preview(&ui, &path);
+                }
+            } else {
+                fs::web_preview::stop();
             }
         }
     });
 }
 
+/// 预览卡片内容区在窗口内的物理像素矩形。
+/// 与 quick_look.slint 布局约定一致：卡片（AppState.ql-card-w/h 逻辑像素）居中、
+/// 头部/底部高度取 ui_bridge::QL_HEADER_H/QL_FOOTER_H——卡片尺寸唯一来源是
+/// ui_bridge::apply_ql_card_size，视频/网页原生子窗口据此对齐覆盖。
+#[cfg(windows)]
+fn quicklook_content_rect_phys(ui: &MainWindow) -> Option<(i32, i32, i32, i32)> {
+    let mut out = None;
+    let st = ui.global::<AppState>();
+    let (card_lw, card_lh) = (st.get_ql_card_w(), st.get_ql_card_h());
+    ui.window().with_winit_window(|winit_window| {
+        let scale = winit_window.scale_factor() as f32;
+        let size = winit_window.inner_size();
+        let (win_w, win_h) = (size.width as f32, size.height as f32);
+        let card_w = card_lw * scale;
+        let card_h = card_lh * scale;
+        let card_x = (win_w - card_w) / 2.0;
+        let card_y = (win_h - card_h) / 2.0;
+        let content_y = card_y + ui_bridge::QL_HEADER_H * scale;
+        let content_h = card_h - (ui_bridge::QL_HEADER_H + ui_bridge::QL_FOOTER_H) * scale;
+        out = Some((
+            card_x as i32,
+            content_y as i32,
+            card_w as i32,
+            content_h as i32,
+        ));
+    });
+    out
+}
+
+/// 取主窗口 HWND（isize；窗口未就绪返回 0）
+#[cfg(windows)]
+fn main_hwnd(ui: &MainWindow) -> isize {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let mut hwnd_isize: isize = 0;
+    ui.window().with_winit_window(|winit_window| {
+        if let Ok(handle) = winit_window.window_handle() {
+            if let RawWindowHandle::Win32(h) = handle.as_raw() {
+                hwnd_isize = isize::from(h.hwnd);
+            }
+        }
+    });
+    hwnd_isize
+}
+
+/// 启动视频预览：子窗口对齐内容区，媒体源异步加载（不阻塞 UI）；
+/// 分辨率就绪后回调 on_video_size_ready 把卡片调整为视频宽高比。
+#[cfg(windows)]
+fn start_video_preview(ui: &MainWindow, path: &str) {
+    let Some(rect) = quicklook_content_rect_phys(ui) else {
+        return;
+    };
+    let hwnd = main_hwnd(ui);
+    if hwnd == 0 {
+        return;
+    }
+    let wk = ui.as_weak();
+    let ok = fs::video_preview::start(
+        hwnd,
+        rect,
+        path,
+        Box::new(move |vw, vh| {
+            // MFPlay 回调线程 → UI 线程
+            let _ = wk.upgrade_in_event_loop(move |ui| on_video_size_ready(&ui, vw, vh));
+        }),
+    );
+    if !ok {
+        ui.global::<AppState>()
+            .set_status_text("视频播放启动失败（编解码器不支持）".into());
+    }
+}
+
 #[cfg(not(windows))]
 fn start_video_preview(_ui: &MainWindow, _path: &str) {}
+
+/// 视频原生分辨率就绪：把预览卡片调整为视频宽高比并对齐播放子窗口
+#[cfg(windows)]
+fn on_video_size_ready(ui: &MainWindow, vw: u32, vh: u32) {
+    let st = ui.global::<AppState>();
+    // 预览可能已被关闭或切换到其它内容：忽略迟到的分辨率
+    if !st.get_quicklook_open() || st.get_ql_kind() != 4 {
+        return;
+    }
+    st.set_ql_img_w(vw as i32);
+    st.set_ql_img_h(vh as i32);
+    // 副标题前缀分辨率（与图片预览格式一致）
+    let sub = st.get_ql_subtitle().to_string();
+    let res = format!("{}×{}", vw, vh);
+    if !sub.starts_with(&res) {
+        st.set_ql_subtitle(format!("{} 像素 · {}", res, sub).into());
+    }
+    ui_bridge::apply_ql_card_size(ui, 4, vw as i32, vh as i32, false);
+    if let Some(rect) = quicklook_content_rect_phys(ui) {
+        fs::video_preview::reposition(rect);
+    }
+}
+
+/// 启动网页渲染视图（Markdown/HTML/PHP）：WebView2 子层对齐内容区异步创建；
+/// 运行时不可用时回退源码视图并提示。
+#[cfg(windows)]
+fn start_web_preview(ui: &MainWindow, path: &str) {
+    let Some(rect) = quicklook_content_rect_phys(ui) else {
+        return;
+    };
+    let hwnd = main_hwnd(ui);
+    if hwnd == 0 {
+        return;
+    }
+    let dark = ui.global::<Theme>().get_dark();
+    let ok = fs::web_preview::start(
+        hwnd,
+        rect,
+        fs::web_preview::WebContent {
+            path: path.to_string(),
+            dark,
+        },
+    );
+    if !ok {
+        let st = ui.global::<AppState>();
+        st.set_ql_web_mode(false);
+        ui_bridge::apply_ql_card_size(ui, st.get_ql_kind(), 0, 0, false);
+        st.set_status_text("渲染视图不可用（需要 WebView2 运行时），已切换到源码视图".into());
+    }
+}
+
+#[cfg(not(windows))]
+fn start_web_preview(_ui: &MainWindow, _path: &str) {}
 
 /// 弹出系统「打开方式」对话框（取宿主 HWND 后调用 SHOpenWithDialog）。
 #[cfg(windows)]
@@ -3818,11 +4047,24 @@ fn bind_tabs(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         }
     });
 
-    // 关闭标签页（按下标关闭）
+    // 关闭标签页（按下标关闭）。仅剩最后一个标签页时：
+    // 若设置「关闭最后标签页时退出」已开启，则与关闭按钮同路径退出应用。
     let w = ui.as_weak();
     let c = core.clone();
     state.on_close_tab_at(move |idx| {
         if let Some(ui) = w.upgrade() {
+            let (is_last, exit_on_last) = {
+                let core = c.borrow();
+                (core.tab_count() <= 1, core.config.settings.exit_on_last_tab)
+            };
+            if is_last {
+                if exit_on_last {
+                    // 与自绘关闭按钮/系统关闭请求一致：先保存窗口几何再退出
+                    save_window_geometry(&ui, &c);
+                    let _ = slint::quit_event_loop();
+                }
+                return;
+            }
             if c.borrow_mut().close_tab(idx as usize).is_some() {
                 load_current(&ui, &c);
             }

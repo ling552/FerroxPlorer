@@ -1,8 +1,19 @@
 // 构建脚本：编译 Slint UI，并在 Windows 上从 icon.png 生成 icon.ico 嵌入 exe
 fn main() {
-    // Slint 主窗口编译
-    let config = slint_build::CompilerConfiguration::new().with_style("fluent-light".into());
-    slint_build::compile_with_config("ui/main.slint", config).expect("Slint 主窗口编译失败");
+    // Slint 主窗口编译。
+    // 在 64MB 大栈线程中执行：Slint 编译器对表达式/组件树做深递归，
+    // UI 复杂度增长后会撑爆 Windows build script 主线程默认 1MB 栈
+    // （STATUS_STACK_OVERFLOW 0xc00000fd）。
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            let config =
+                slint_build::CompilerConfiguration::new().with_style("fluent-light".into());
+            slint_build::compile_with_config("ui/main.slint", config).expect("Slint 主窗口编译失败");
+        })
+        .expect("创建 Slint 编译线程失败")
+        .join()
+        .expect("Slint 编译线程崩溃");
 
     // Windows：以 icon.png 为唯一图标源，构建时生成多尺寸 icon.ico 并嵌入 exe，
     // 作为任务栏 / 标题栏 / 资源管理器中的应用程序图标

@@ -302,6 +302,16 @@ export global AppState {
     // 条目的真实缩略图/系统图标（取自文件列表模型），头部与信息页大图标优先使用
     in-out property <image> ql-thumb;
     in-out property <bool> ql-has-thumb: false;
+    // 预览卡片尺寸（逻辑像素）：Rust 按内容类型/图片视频分辨率/窗口大小计算，
+    // 与视频/网页原生子窗口矩形共用一套公式（详见 ui_bridge::apply_ql_card_size）
+    in-out property <length> ql-card-w: 640px;
+    in-out property <length> ql-card-h: 560px;
+    // Markdown/HTML/PHP：支持「渲染 ↔ 源码」双视图
+    in-out property <bool> ql-can-render: false;
+    // 当前处于渲染模式（WebView2 原生子窗口覆盖内容区显示网页）
+    in-out property <bool> ql-web-mode: false;
+    // 切换渲染/源码视图（Rust 端启停 WebView2 子窗口并重算卡片尺寸）
+    callback ql-set-web-mode(bool);
     // 打开当前选中项的 Quick Look 预览（由空格键触发）
     callback open-quicklook();
     // 关闭 Quick Look（空格键再次按下 / Esc）
@@ -358,6 +368,12 @@ export global AppState {
     callback show-system-menu(int, length, length);
     // 弹出系统目录「背景」右键菜单（空白处：查看/排序/新建/粘贴等），参数为窗口内坐标
     callback show-system-background-menu(length, length);
+    // 按路径弹出系统右键菜单（侧边栏项等不在面板条目模型里的目标；
+    // 参数：目标路径或虚拟 scheme、窗口内逻辑坐标 x/y）
+    callback show-system-menu-path(string, length, length);
+    // OLE 拖出：把选中文件拖到其他应用（参数：源面板 "left"/"right"、按下条目下标）。
+    // Rust 端模态执行 DoDragDrop，返回后自行复位指针状态。
+    callback drag-out(string, int);
     // 固定到快速访问（参数：目标下标；仅文件夹有效）
     callback pin-to-quick-access(int);
 

@@ -2,6 +2,8 @@
 
 pub mod clipboard;
 pub mod disk;
+// OLE 拖出：把选中文件拖拽到其他应用（DoDragDrop + Shell 数据对象）
+pub mod drag_out;
 pub mod hash;
 pub mod highlight;
 pub mod video_preview;
@@ -13,6 +15,8 @@ pub mod openwith;
 pub mod operations;
 // 空格键 Quick Look 预览内容计算（图片/文本/文件夹/其它归类）
 pub mod preview;
+// Quick Look 网页渲染视图：WebView2 渲染 HTML/PHP/Markdown（源码/渲染切换）
+pub mod web_preview;
 pub mod recyclebin;
 // PE 文件 Authenticode 数字签名检测（字节解析，跨平台）
 pub mod signature;

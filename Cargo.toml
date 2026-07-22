@@ -1,7 +1,7 @@
 # FerroxPlorer - Rust + Slint 现代文件管理器
 [package]
 name = "ferroxplorer"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 description = "现代化桌面文件管理器，Rust + Slint 实现"
 build = "build.rs"
@@ -53,13 +53,21 @@ flate2 = "1.0"
 ureq = { version = "2", features = ["json"] }
 # 解析 GitHub API 返回的 JSON
 serde_json = "1"
+# Markdown 解析：空格预览渲染 Markdown 文档（转 HTML 后由 WebView2 显示）
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
 
 [target.'cfg(windows)'.dependencies]
 # Windows 磁盘剩余空间查询、驱动器类型、DWM 窗口圆角
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_UI_Controls_Dialogs", "Win32_UI_HiDpi", "Win32_Graphics_Gdi", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_LibraryLoader"] }
 # 高层 COM 封装：调用 IShellItemImageFactory::GetImage 提取系统图标 / 图片缩略图 / 视频首帧；
-# 以及 Shell IContextMenu + TrackPopupMenuEx 弹出原生右键菜单（含第三方注册项）
-windows = { version = "0.59", features = ["Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization", "Win32_Devices_PortableDevices", "Win32_NetworkManagement_WNet", "Win32_Media_MediaFoundation"] }
+# 以及 Shell IContextMenu + TrackPopupMenuEx 弹出原生右键菜单（含第三方注册项）；
+# Ole/SystemServices/Memory：#[implement]（windows-core 默认提供）实现 IDropSource/
+# IMFPMediaPlayerCallback，支撑 OLE 拖出（DoDragDrop）与 MFPlay 异步媒体加载
+windows = { version = "0.59", features = ["Win32_UI_Shell_PropertiesSystem", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_SystemServices", "Win32_System_Memory", "Win32_System_Variant", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization", "Win32_Devices_PortableDevices", "Win32_NetworkManagement_WNet", "Win32_Media_MediaFoundation"] }
+# WebView2：空格预览渲染 HTML/PHP/Markdown（子窗口内嵌 Edge WebView2 运行时）
+webview2-com = "0.35"
+# #[implement] 宏展开引用 ::windows_core 路径，须与 windows 0.59 同版本显式引入
+windows-core = "0.59"
 # Windows 注册表读取：枚举 ShellNew 新建项
 winreg = "0.52"
 # 从 winit 窗口取原始 HWND（用于 DWM 圆角）

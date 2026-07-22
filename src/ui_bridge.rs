@@ -1332,6 +1332,50 @@ fn fill_signature(state: &AppState, path: &Path, is_dir: bool) {
 // 预览位图提取上限：更高的源分辨率让滚轮放大查看时保持清晰
 const QL_IMAGE_SIZE: u32 = 1600;
 
+/// 预览卡片头部/底部高度（逻辑像素）——与 quick_look.slint 布局约定一致，
+/// 视频/网页原生子窗口矩形换算（main.rs quicklook_content_rect_phys）共用
+pub const QL_HEADER_H: f32 = 64.0;
+pub const QL_FOOTER_H: f32 = 38.0;
+
+/// 按内容类型计算并应用预览卡片尺寸（逻辑像素）。
+/// `kind_code` 与 PreviewKind::code 一致；`iw`/`ih` 为图片或视频原生分辨率
+/// （未知传 0）；`web_mode` 表示 Markdown/HTML 的渲染视图。
+/// 规则：图片/视频按分辨率适应显示无空白（内容区最小 256×256，更小的居中留白）；
+/// 文件夹/信息紧凑；文本中等；网页渲染视图较大；全部不超过窗口可用区域。
+pub fn apply_ql_card_size(ui: &MainWindow, kind_code: i32, iw: i32, ih: i32, web_mode: bool) {
+    let state = ui.global::<AppState>();
+    let scale = ui.window().scale_factor().max(0.5);
+    let size = ui.window().size();
+    let win_w = size.width as f32 / scale;
+    let win_h = size.height as f32 / scale;
+    let chrome = QL_HEADER_H + QL_FOOTER_H;
+    // 内容区可用上限（窗口小则收缩，但不低于最小 256）
+    let max_cw = (win_w - 96.0).clamp(256.0, 1200.0);
+    let max_ch = (win_h - 96.0 - chrome).clamp(256.0, 900.0);
+    let (cw, ch) = match kind_code {
+        // 图片/视频：按原生分辨率适应（放不下等比缩小，小图 1:1，最小 256）
+        1 | 4 => {
+            if iw > 0 && ih > 0 {
+                let fit = (max_cw / iw as f32).min(max_ch / ih as f32).min(1.0);
+                ((iw as f32 * fit).max(256.0), (ih as f32 * fit).max(256.0))
+            } else {
+                // 视频分辨率未知（异步加载中）：先按 16:9 常规尺寸，就绪后再调整
+                (704.0_f32.min(max_cw), 396.0_f32.min(max_ch))
+            }
+        }
+        // 文本/代码：渲染视图更大，源码视图中等
+        2 if web_mode => (880.0_f32.min(max_cw), max_ch),
+        2 => (680.0_f32.min(max_cw), 520.0_f32.min(max_ch)),
+        // 文件夹：紧凑（图标 + 名称 + 两行统计，不留大片空白）
+        3 => (420.0, 300.0),
+        // 其它信息：更紧凑
+        _ => (420.0, 264.0),
+    };
+    // 卡片最小宽度保证头部（图标+文件名+按钮）可读
+    state.set_ql_card_w(cw.max(380.0));
+    state.set_ql_card_h(ch + chrome);
+}
+
 /// 填充 Quick Look 预览内容：根据选中项类型设置 ql-* 属性。
 /// `right` 为真时预览右侧面板的选中项（双面板右侧活动）。
 /// 返回是否成功设置（无选中项返回 false，调用方据此决定是否打开浮层）。
@@ -1358,6 +1402,9 @@ pub fn fill_quicklook(ui: &MainWindow, core: &AppCore, right: bool) -> bool {
     state.set_ql_code_str("".into());
     state.set_ql_code_cmt("".into());
     state.set_ql_info("".into());
+    // 渲染/源码切换状态复位（Markdown/HTML/PHP 在 Text 分支重新置位）
+    state.set_ql_can_render(false);
+    state.set_ql_web_mode(false);
     // 条目的真实缩略图/系统图标（取对应面板列表模型已生成的位图），头部与大图标优先显示
     let model = if right {
         state.get_r_entries()
@@ -1421,6 +1468,12 @@ pub fn fill_quicklook(ui: &MainWindow, core: &AppCore, right: bool) -> bool {
         }
         PreviewKind::Text => {
             state.set_ql_subtitle(size_text.into());
+            // Markdown/HTML/PHP：支持渲染视图，默认以渲染模式打开
+            // （WebView2 子窗口由 main.rs 在浮层打开后启动；源码层照常填充备切换）
+            if preview::renderable_web(path) {
+                state.set_ql_can_render(true);
+                state.set_ql_web_mode(true);
+            }
             // 读取首部 64KB 文本并按扩展名做分层语法高亮
             let text = preview::read_text_head(path, 64 * 1024);
             let ext = path
@@ -1468,6 +1521,13 @@ pub fn fill_quicklook(ui: &MainWindow, core: &AppCore, right: bool) -> bool {
             );
         }
     }
+    // 按内容类型自适应卡片尺寸（图片用真实分辨率；视频分辨率异步就绪后再调整）
+    let (iw, ih) = if kind == PreviewKind::Image {
+        (state.get_ql_img_w(), state.get_ql_img_h())
+    } else {
+        (0, 0)
+    };
+    apply_ql_card_size(ui, kind.code(), iw, ih, state.get_ql_web_mode());
     true
 }
 

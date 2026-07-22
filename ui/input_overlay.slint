@@ -40,6 +40,8 @@ export component InputOverlay inherits TouchArea {
     property <int> press-idx: -1;
     property <bool> press-empty: false;
     property <bool> press-ctrl: false;
+    // 按下时是否按住 Shift：双面板模式下 Shift+拖动条目 = OLE 拖出（普通拖动为跨面板）
+    property <bool> press-shift: false;
 
     // 任一面板处于行内重命名时禁用，事件回落到 ListView 内的输入框
     enabled: AppState.editing-index < 0 && AppState.r-editing-index < 0;
@@ -105,8 +107,23 @@ export component InputOverlay inherits TouchArea {
         }
     }
 
+    // 触发 OLE 拖出：按右键语义整理选择（未选中则单选，已选中保持多选），
+    // 然后交给 Rust 模态执行 DoDragDrop；返回后复位按下状态（up 事件已被 OLE 吃掉）
+    function start-drag-out() {
+        if (root.pane == "left") {
+            if (!AppState.entries[root.press-idx].selected) { root.do-select(root.press-idx, false); }
+        } else {
+            if (!AppState.r-entries[root.press-idx].selected) { root.do-select(root.press-idx, false); }
+        }
+        AppState.drag-out(root.pane, root.press-idx);
+        root.dragging = false;
+        root.press-idx = -1;
+        root.press-empty = false;
+    }
+
     moved => {
         // 越过 6px 阈值后决定行为：空白处→框选；条目上且双面板→跨面板拖拽
+        // （按住 Shift 则改为 OLE 拖出）；条目上且单面板→OLE 拖出到其他应用
         if (!root.dragging && !root.box-active
             && (self.mouse-x - root.press-x > 6px || root.press-x - self.mouse-x > 6px
                 || self.mouse-y - root.press-y > 6px || root.press-y - self.mouse-y > 6px)) {
@@ -116,7 +133,7 @@ export component InputOverlay inherits TouchArea {
                 root.box-y0 = root.press-y;
                 root.box-x1 = self.mouse-x;
                 root.box-y1 = self.mouse-y;
-            } else if (AppState.dual-pane && root.press-idx >= 0) {
+            } else if (AppState.dual-pane && !root.press-shift && root.press-idx >= 0) {
                 root.dragging = true;
                 root.do-select(root.press-idx, false);
                 AppState.pane-drag-source = root.pane;
@@ -124,6 +141,8 @@ export component InputOverlay inherits TouchArea {
                     ? AppState.entries[root.press-idx].name
                     : AppState.r-entries[root.press-idx].name;
                 AppState.pane-drag-active = true;
+            } else if (root.press-idx >= 0) {
+                root.start-drag-out();
             }
         }
         if (root.box-active) {
@@ -142,6 +161,7 @@ export component InputOverlay inherits TouchArea {
             root.press-x = self.mouse-x;
             root.press-y = self.mouse-y;
             root.press-ctrl = ev.modifiers.control;
+            root.press-shift = ev.modifiers.shift;
             root.press-idx = root.hit-idx(self.mouse-x, self.mouse-y);
             root.press-empty = root.press-idx < 0;
             root.dragging = false;
