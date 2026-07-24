@@ -143,10 +143,7 @@ mod windows_impl {
 
         let ret = unsafe { SHFileOperationW(&mut op) };
         if ret != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("移入回收站失败（SHFileOperation 代码 {}）", ret),
-            ));
+            return Err(std::io::Error::from_raw_os_error(ret));
         }
         if op.fAnyOperationsAborted != 0 {
             return Err(std::io::Error::new(

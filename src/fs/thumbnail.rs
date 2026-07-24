@@ -35,6 +35,8 @@ fn path_cache() -> &'static Mutex<HashMap<String, Arc<IconPixels>>> {
 
 /// 文件夹在类型缓存中的特殊键（用控制字符避免与任何扩展名冲突）。
 const DIR_KEY: &str = "\u{0}<dir>";
+/// 无扩展名普通文件的类型缓存键，不能与文件夹共用空字符串。
+const FILE_KEY: &str = "\u{0}<file>";
 /// 便携设备在类型缓存中的特殊键。
 const DEVICE_KEY: &str = "\u{0}<device>";
 
@@ -104,8 +106,9 @@ fn kind_of(path: &str, is_dir: bool, mtime: i64) -> Kind {
     let ext = ext_of(path);
     if per_file_icon(&ext) {
         Kind::Path(format!("{}|{}", path, mtime))
+    } else if ext.is_empty() {
+        Kind::Type(FILE_KEY.to_string())
     } else {
-        // 空扩展名归一到 "" 键，与其它普通类型一致共享
         Kind::Type(ext)
     }
 }
@@ -120,7 +123,12 @@ fn request_kind(request: &IconRequest) -> Kind {
         IconRequest::Type { extension, is_dir } => Kind::Type(if *is_dir {
             DIR_KEY.to_string()
         } else {
-            normalize_extension(extension)
+            let extension = normalize_extension(extension);
+            if extension.is_empty() {
+                FILE_KEY.to_string()
+            } else {
+                extension
+            }
         }),
         IconRequest::Device => Kind::Type(DEVICE_KEY.to_string()),
     }
@@ -152,12 +160,12 @@ pub fn load_cached_request(request: &IconRequest, size: u32) -> Option<Arc<IconP
     let kind = request_kind(request);
     let raw = match (request, &kind) {
         (IconRequest::RealPath { .. }, Kind::Type(key)) => {
-            let dotted = if key == DIR_KEY || key.is_empty() {
+            let dotted = if key == DIR_KEY || key == FILE_KEY {
                 String::new()
             } else {
                 format!(".{}", key)
             };
-            extract_type_icon(&dotted, size)
+            extract_type_icon(&dotted, key == DIR_KEY, size)
         }
         (IconRequest::RealPath { path, .. }, Kind::Path(_)) => extract(path, size).or_else(|| {
             let ext = ext_of(path);
@@ -166,7 +174,7 @@ pub fn load_cached_request(request: &IconRequest, size: u32) -> Option<Arc<IconP
             } else {
                 format!(".{}", ext)
             };
-            extract_type_icon(&dotted, size)
+            extract_type_icon(&dotted, false, size)
         }),
         (IconRequest::Type { extension, is_dir }, _) => {
             let ext = normalize_extension(extension);
@@ -175,7 +183,7 @@ pub fn load_cached_request(request: &IconRequest, size: u32) -> Option<Arc<IconP
             } else {
                 format!(".{}", ext)
             };
-            extract_type_icon(&dotted, size)
+            extract_type_icon(&dotted, *is_dir, size)
         }
         (IconRequest::Device, _) => extract_device_icon(size),
     };
@@ -556,7 +564,7 @@ fn render_hicon(
 /// 用最高可用的分辨率源图标在目标尺寸下绘制，避免 32px 源被放大到 128px 时的模糊。
 /// 返回 (RGBA 像素, 宽, 高)，失败返回 None（调用方回退到内置矢量图）。
 #[cfg(windows)]
-pub fn extract_type_icon(ext: &str, size: u32) -> Option<(Vec<u8>, u32, u32)> {
+pub fn extract_type_icon(ext: &str, is_dir: bool, size: u32) -> Option<(Vec<u8>, u32, u32)> {
     use windows::core::PCWSTR;
     use windows::Win32::Graphics::Gdi::{
         CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
@@ -573,10 +581,11 @@ pub fn extract_type_icon(ext: &str, size: u32) -> Option<(Vec<u8>, u32, u32)> {
     };
     use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, DrawIconEx, DI_NORMAL, HICON};
 
-    let is_dir = ext.is_empty();
-    // 仅用扩展名构造一个虚拟文件名，文件无需真实存在
+    // 目录与无扩展名普通文件都没有扩展名，必须由调用方明确区分属性。
     let name = if is_dir {
         "folder".to_string()
+    } else if ext.is_empty() {
+        "file".to_string()
     } else {
         format!("x{}", ext)
     };
@@ -734,7 +743,7 @@ pub fn extract_type_icon(ext: &str, size: u32) -> Option<(Vec<u8>, u32, u32)> {
 }
 
 #[cfg(not(windows))]
-pub fn extract_type_icon(_ext: &str, _size: u32) -> Option<(Vec<u8>, u32, u32)> {
+pub fn extract_type_icon(_ext: &str, _is_dir: bool, _size: u32) -> Option<(Vec<u8>, u32, u32)> {
     None
 }
 
@@ -769,7 +778,13 @@ mod tests {
             extension: String::new(),
             is_dir: true,
         };
+        let plain_file = IconRequest::Type {
+            extension: String::new(),
+            is_dir: false,
+        };
         assert_eq!(kind_key(&folder), (true, DIR_KEY.into()));
+        assert_eq!(kind_key(&plain_file), (true, FILE_KEY.into()));
+        assert_ne!(kind_key(&folder), kind_key(&plain_file));
         assert_eq!(kind_key(&IconRequest::Device), (true, DEVICE_KEY.into()));
     }
 

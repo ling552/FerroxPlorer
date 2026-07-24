@@ -310,6 +310,9 @@ export global AppState {
     in-out property <bool> ql-can-render: false;
     // 当前处于渲染模式（WebView2 原生子窗口覆盖内容区显示网页）
     in-out property <bool> ql-web-mode: false;
+    // 视频预览无边框显示器全屏；Esc 优先退出全屏，再关闭预览。
+    in-out property <bool> ql-video-fullscreen: false;
+    callback ql-toggle-video-fullscreen();
     // 切换渲染/源码视图（Rust 端启停 WebView2 子窗口并重算卡片尺寸）
     callback ql-set-web-mode(bool);
     // 打开当前选中项的 Quick Look 预览（由空格键触发）
@@ -368,7 +371,9 @@ export global AppState {
     callback show-system-menu(int, length, length);
     // 弹出系统目录「背景」右键菜单（空白处：查看/排序/新建/粘贴等），参数为窗口内坐标
     callback show-system-background-menu(length, length);
-    // 按路径弹出系统右键菜单（侧边栏项等不在面板条目模型里的目标；
+    // 侧栏导航项专用菜单：只展示导航相关操作，避免混入文件区第三方 Shell 扩展。
+    callback show-sidebar-menu(string, length, length);
+    // 按路径弹出系统右键菜单（非侧栏场景兼容保留；
     // 参数：目标路径或虚拟 scheme、窗口内逻辑坐标 x/y）
     callback show-system-menu-path(string, length, length);
     // OLE 拖出：把选中文件拖到其他应用（参数：源面板 "left"/"right"、按下条目下标）。

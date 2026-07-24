@@ -4,6 +4,8 @@ pub mod clipboard;
 pub mod disk;
 // OLE 拖出：把选中文件拖拽到其他应用（DoDragDrop + Shell 数据对象）
 pub mod drag_out;
+// 受保护目录文件操作：权限被拒绝时按需请求 UAC
+pub mod elevated;
 pub mod hash;
 pub mod highlight;
 pub mod video_preview;
@@ -16,8 +18,8 @@ pub mod operations;
 // 空格键 Quick Look 预览内容计算（图片/文本/文件夹/其它归类）
 pub mod preview;
 // Quick Look 网页渲染视图：WebView2 渲染 HTML/PHP/Markdown（源码/渲染切换）
-pub mod web_preview;
 pub mod recyclebin;
+pub mod web_preview;
 // PE 文件 Authenticode 数字签名检测（字节解析，跨平台）
 pub mod signature;
 // 后台文件任务队列：复制 / 移动异步执行，带真实进度、暂停、取消
@@ -26,6 +28,8 @@ pub mod tasks;
 pub mod watcher;
 // Windows 原生 Shell 右键菜单：IContextMenu + TrackPopupMenuEx（含第三方注册项）
 pub mod shell_menu;
+// 侧栏导航项专用轻量菜单，避免展示文件区第三方扩展项
+pub mod sidebar_menu;
 // Windows ShellNew 注册表枚举：读取系统右键"新建"菜单项
 pub mod shell_new;
 // 缩略图/系统图标统一提取：IShellItemImageFactory::GetImage（与资源管理器一致）

@@ -66,10 +66,10 @@ export component Sidebar inherits Rectangle {
                         tree-touch := TouchArea {
                             horizontal-stretch: 1;
                             clicked => { AppState.navigate(item.path); }
-                            // 右键：弹出系统菜单（此电脑 → Shell 命名空间映射由 Rust 端处理）
+                            // 右键：侧栏专用导航菜单
                             pointer-event(ev) => {
                                 if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) {
-                                    AppState.show-system-menu-path(item.path,
+                                    AppState.show-sidebar-menu(item.path,
                                         self.absolute-position.x + self.mouse-x,
                                         self.absolute-position.y + self.mouse-y);
                                 }
@@ -108,10 +108,10 @@ export component Sidebar inherits Rectangle {
                     background: item.active ? Theme.primary-soft : (disk-touch.has-hover ? Theme.primary-hover : transparent);
                     disk-touch := TouchArea {
                         clicked => { AppState.navigate(item.path); }
-                        // 右键：弹出该驱动器的系统菜单（格式化/属性/弹出等）
+                        // 右键：驱动器的侧栏导航菜单
                         pointer-event(ev) => {
                             if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) {
-                                AppState.show-system-menu-path(item.path,
+                                AppState.show-sidebar-menu(item.path,
                                     self.absolute-position.x + self.mouse-x,
                                     self.absolute-position.y + self.mouse-y);
                             }
@@ -144,10 +144,10 @@ export component Sidebar inherits Rectangle {
                     background: item.active ? Theme.primary-soft : (dev-touch.has-hover ? Theme.primary-hover : transparent);
                     dev-touch := TouchArea {
                         clicked => { AppState.navigate(item.path); }
-                        // 右键：便携设备为自定义 scheme，Rust 端会静默跳过不支持的项
+                        // 右键：便携设备仅提供安全的导航操作
                         pointer-event(ev) => {
                             if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) {
-                                AppState.show-system-menu-path(item.path,
+                                AppState.show-sidebar-menu(item.path,
                                     self.absolute-position.x + self.mouse-x,
                                     self.absolute-position.y + self.mouse-y);
                             }
@@ -175,11 +175,10 @@ export component Sidebar inherits Rectangle {
                     background: item.active ? Theme.primary-soft : (nav-touch.has-hover ? Theme.primary-hover : transparent);
                     nav-touch := TouchArea {
                         clicked => { AppState.navigate(item.path); }
-                        // 右键：快速访问项是真实路径直接弹系统菜单；
-                        // 标签/回收站/网络等虚拟 scheme 由 Rust 端映射或跳过
+                        // 右键：真实目录提供新标签页/新面板，虚拟节点仅提供打开
                         pointer-event(ev) => {
                             if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) {
-                                AppState.show-system-menu-path(item.path,
+                                AppState.show-sidebar-menu(item.path,
                                     self.absolute-position.x + self.mouse-x,
                                     self.absolute-position.y + self.mouse-y);
                             }
