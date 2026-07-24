@@ -146,10 +146,9 @@ mod windows_impl {
             return Err(std::io::Error::from_raw_os_error(ret));
         }
         if op.fAnyOperationsAborted != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "操作被中止",
-            ));
+            // ret==0 但仍被中止的罕见情形：通常是权限不足导致 Shell 静默放弃。
+            // 返回 ACCESS_DENIED(5)，让上层据此请求管理员提权重试。
+            return Err(std::io::Error::from_raw_os_error(5));
         }
         Ok(())
     }

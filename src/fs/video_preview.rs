@@ -141,6 +141,12 @@ mod win_impl {
                             return;
                         }
                         let _ev = &*(peventheader as *const MFP_MEDIAITEM_SET_EVENT);
+                        // 保持画面宽高比（信箱式留黑边）：分辨率就绪前子窗口按默认
+                        // 16:9 布局，若不设此模式，竖屏视频会被拉伸变形
+                        let _ = player.SetAspectRatioMode(
+                            windows::Win32::Media::MediaFoundation::MFVideoARMode_PreservePicture.0
+                                as u32,
+                        );
                         let _ = player.Play();
                         // 优先使用 Media Foundation 计算后的显示宽高比尺寸。
                         // 它已包含非方形像素等修正，竖屏素材不能只用编码帧尺寸。
@@ -241,10 +247,13 @@ mod win_impl {
         });
     }
 
-    /// 对齐子窗口到新矩形（卡片按视频宽高比自适应后调用）
+    /// 对齐子窗口到新矩形（卡片按视频宽高比自适应后调用）。
+    /// MFPlay 不会自动感知宿主窗口尺寸变化：MoveWindow 后必须调用
+    /// UpdateVideo() 通知播放器重算视频布局，否则画面仍按旧窗口
+    /// 大小渲染（表现为切换视频后首次预览比例错误、直到重开才恢复）。
     pub fn reposition(rect: (i32, i32, i32, i32)) {
         ACTIVE.with(|a| {
-            if let Some((_, hwnd)) = a.borrow().as_ref() {
+            if let Some((player, hwnd)) = a.borrow().as_ref() {
                 unsafe {
                     let _ = MoveWindow(
                         HWND(*hwnd as *mut core::ffi::c_void),
@@ -254,6 +263,7 @@ mod win_impl {
                         rect.3,
                         true,
                     );
+                    let _ = player.UpdateVideo();
                 }
             }
         });

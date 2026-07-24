@@ -7,6 +7,9 @@ pub mod drag_out;
 // 受保护目录文件操作：权限被拒绝时按需请求 UAC
 pub mod elevated;
 pub mod hash;
+// 分层语法高亮：曾用于空格预览多层染色。Slint 单元素不支持富文本、
+// 多层叠加在混合中英文时基线漂移，预览已回退单层纯文本；模块保留备用
+#[allow(dead_code)]
 pub mod highlight;
 pub mod video_preview;
 // 文件名索引：后台重建（带进度）+ 深层搜索加速

@@ -213,6 +213,18 @@ export component InputOverlay inherits TouchArea {
                 root.do-clear();
                 root.request-context-menu(-1, self.mouse-x, self.mouse-y);
             }
+            // 系统右键菜单是模态阻塞的（TrackPopupMenuEx）：期间鼠标被原生菜单捕获，
+            // 本层 TouchArea 收不到随后的 pointer-up。若不在此复位按下/框选/拖拽状态，
+            // 菜单关闭后移动鼠标会因残留的 press-empty / press-idx 误入框选或拖拽。
+            // 故无论菜单是否执行了命令，返回后一律清空交互状态、并以当前位置重置按下点。
+            root.press-idx = -1;
+            root.press-empty = false;
+            root.press-ctrl = false;
+            root.press-shift = false;
+            root.dragging = false;
+            root.box-active = false;
+            root.press-x = self.mouse-x;
+            root.press-y = self.mouse-y;
         }
     }
 

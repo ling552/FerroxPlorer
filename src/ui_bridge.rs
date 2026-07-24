@@ -19,6 +19,10 @@ static THUMB_GEN: AtomicU64 = AtomicU64::new(0);
 /// 右侧面板独立的缩略图代数（与左侧互不干扰）
 static R_THUMB_GEN: AtomicU64 = AtomicU64::new(0);
 
+/// Git 状态查询代数：每次左侧目录推送自增。libgit2 对大仓库的全工作区
+/// status 可达数秒，必须放后台线程；回填前比对代数，目录已切换则丢弃。
+static GIT_GEN: AtomicU64 = AtomicU64::new(0);
+
 /// 缩略图回填目标面板：左侧主视图 entries / 右侧双面板 r_entries
 #[derive(Clone, Copy, PartialEq)]
 enum ThumbSide {
@@ -184,13 +188,10 @@ pub fn push_entries(ui: &MainWindow, core: &AppCore) {
         })
         .collect();
 
-    // Git 状态：当前目录若属于仓库则计算一次工作区状态（虚拟路径跳过）
+    // Git 状态改为后台线程计算（libgit2 对大仓库的 status 扫描可达数秒，
+    // 同步执行会让「打开文件夹」明显卡顿）。这里先以空状态推送条目，
+    // 结果就绪后按代数校验逐行回填徽章与分支名。
     let cur_path = tab.history.current().clone();
-    let git_info = if crate::fs::virtualfs::is_virtual(&cur_path.to_string_lossy()) {
-        None
-    } else {
-        crate::git::status_for_dir(&cur_path)
-    };
 
     // 文件条目
     let rows: Vec<FileEntry> = tab
@@ -220,11 +221,8 @@ pub fn push_entries(ui: &MainWindow, core: &AppCore) {
                 tag_important: core.config.has_tag(&e.path, "important"),
                 tag_archive: core.config.has_tag(&e.path, "archive"),
                 tag_done: core.config.has_tag(&e.path, "done"),
-                git_status: git_info
-                    .as_ref()
-                    .map(|g| g.status_of(&e.path, e.is_dir))
-                    .unwrap_or_default()
-                    .into(),
+                // Git 徽章由后台线程计算完成后回填（见 spawn_git_status）
+                git_status: SharedString::new(),
                 thumb,
                 has_thumb,
                 disk_ratio,
@@ -306,14 +304,9 @@ pub fn push_entries(ui: &MainWindow, core: &AppCore) {
     state.set_sort_key(tab.sort_key.clone().into());
     state.set_sort_asc(tab.sort_asc);
 
-    // 当前目录 Git 分支（空串则 UI 隐藏内容头 Git 芯片）
-    state.set_git_branch(
-        git_info
-            .as_ref()
-            .map(|g| g.branch.clone())
-            .unwrap_or_default()
-            .into(),
-    );
+    // Git 分支先清空（避免残留上一个目录的分支芯片），后台计算就绪后回填
+    state.set_git_branch(SharedString::new());
+    spawn_git_status(ui, cur_path);
 
     // 状态栏与详情：按活动面板同步 sel-*（双面板右面板活动时不能用左面板
     // 选中状态覆盖「sel-* = 最近交互面板」语义——如 watcher 软刷新左目录时）
@@ -341,13 +334,6 @@ fn spawn_thumbnails(ui: &MainWindow, jobs: Vec<IconJob>, generation: u64, side: 
             }
             // 走带缓存的入口：按类型/文件提取一次并写入缓存，后续同类型条目同步命中
             let icon = crate::fs::thumbnail::load_cached_request(&request, THUMB_SIZE);
-            eprintln!(
-                "[icon-debug] side={} row={} request={:?} ok={}",
-                if side == ThumbSide::Left { "L" } else { "R" },
-                row,
-                request,
-                icon.is_some()
-            );
             let Some(icon) = icon else {
                 continue;
             };
@@ -377,6 +363,49 @@ fn spawn_thumbnails(ui: &MainWindow, jobs: Vec<IconJob>, generation: u64, side: 
                 }
             });
         }
+    });
+}
+
+/// 后台计算当前目录的 Git 分支与工作区状态，就绪后回填到左侧 entries 模型。
+///
+/// libgit2 的全工作区 status 在大仓库上可达数秒，绝不能在 UI 线程同步执行。
+/// 每次调用自增 GIT_GEN；工作线程完成后回到 UI 线程比对代数——目录已再次
+/// 切换（代数不匹配）则整批丢弃，避免旧目录的徽章错填到新目录。
+fn spawn_git_status(ui: &MainWindow, dir: PathBuf) {
+    let generation = GIT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    if crate::fs::virtualfs::is_virtual(&dir.to_string_lossy()) {
+        return;
+    }
+    let weak = ui.as_weak();
+    std::thread::spawn(move || {
+        // 启动前再校验一次：快速连续导航时跳过已过期的扫描，避免线程堆积
+        if GIT_GEN.load(Ordering::SeqCst) != generation {
+            return;
+        }
+        let info = crate::git::status_for_dir(&dir);
+        let _ = slint::invoke_from_event_loop(move || {
+            if GIT_GEN.load(Ordering::SeqCst) != generation {
+                return;
+            }
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let Some(info) = info else {
+                return; // 非 Git 仓库：分支芯片保持隐藏、徽章保持空
+            };
+            let state = ui.global::<AppState>();
+            state.set_git_branch(info.branch.clone().into());
+            let model = state.get_entries();
+            for fi in 0..model.row_count() {
+                if let Some(mut row) = model.row_data(fi) {
+                    let s = info.status_of(&row.path, row.is_dir);
+                    if row.git_status != s.as_str() {
+                        row.git_status = s.into();
+                        model.set_row_data(fi, row);
+                    }
+                }
+            }
+        });
     });
 }
 
@@ -540,12 +569,13 @@ pub fn update_status(ui: &MainWindow, core: &AppCore) {
     let total = tab.entries.len();
     let cur = tab.history.current();
 
+    // 只查询当前路径所在的单个驱动器：全盘枚举（GetVolumeInformationW 等）
+    // 在存在休眠硬盘/失联网络驱动器时可能阻塞数秒，而状态栏每次刷新都会走到这里
     let mut disk_part = String::new();
     if let Some(letter) = cur.to_string_lossy().chars().next() {
-        for d in disk::list_disks() {
-            if d.letter.eq_ignore_ascii_case(&letter.to_string()) {
+        if letter.is_ascii_alphabetic() {
+            if let Some(d) = disk::disk_info_of(letter) {
                 disk_part = format!(" · {} 剩余 {}", d.name, metadata::human_size(d.free));
-                break;
             }
         }
     }
@@ -1484,22 +1514,19 @@ pub fn fill_quicklook(ui: &MainWindow, core: &AppCore, right: bool) -> bool {
                 state.set_ql_can_render(true);
                 state.set_ql_web_mode(true);
             }
-            // 读取首部 64KB 文本并按扩展名做分层语法高亮
+            // 读取首部 64KB 文本，整段填入单层文本。
+            // 注意：不能再走 highlight 分层——quick_look.slint 已改为单层 Text
+            // 渲染（多层字符遮罩在混合中英文时基线漂移），若仍把关键字/字符串/
+            // 注释挖空到未渲染的图层，就会出现「预览缺字」（字符串全部消失）。
             let text = preview::read_text_head(path, 64 * 1024);
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-            let layers = crate::fs::highlight::highlight(&text, &ext);
-            state.set_ql_text(layers.base.into());
-            state.set_ql_code_kw(layers.keywords.into());
-            state.set_ql_code_str(layers.strings.into());
-            state.set_ql_code_cmt(layers.comments.into());
+            state.set_ql_text(text.into());
         }
         PreviewKind::Video => {
             // 视频：内容由 Media Foundation 子窗口渲染（main.rs 打开预览时启动），
-            // 这里只填标题信息
+            // 这里只填标题信息。分辨率必须清零：残留上一个视频的宽高比会让
+            // 首帧子窗口按旧比例定位/压缩画面，直到重新打开预览才恢复。
+            state.set_ql_img_w(0);
+            state.set_ql_img_h(0);
             state.set_ql_subtitle(size_text.into());
         }
         PreviewKind::Folder => {

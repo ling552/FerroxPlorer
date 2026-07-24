@@ -11,6 +11,9 @@ pub enum ElevatedOp {
     CreateFile,
     Rename,
     Recycle,
+    /// 永久删除（不经回收站）。用于受保护文件：提权后回收仍失败时的兜底，
+    /// 以及任何需要直接删除而不进回收站的场景。
+    Delete,
 }
 
 impl ElevatedOp {
@@ -20,6 +23,7 @@ impl ElevatedOp {
             Self::CreateFile => "touch",
             Self::Rename => "rename",
             Self::Recycle => "recycle",
+            Self::Delete => "delete",
         }
     }
 
@@ -29,9 +33,24 @@ impl ElevatedOp {
             "touch" => Some(Self::CreateFile),
             "rename" => Some(Self::Rename),
             "recycle" => Some(Self::Recycle),
+            "delete" => Some(Self::Delete),
             _ => None,
         }
     }
+}
+
+/// 判定一个 IO 错误是否「需要管理员权限才能完成」。
+/// 受保护文件/目录的典型错误码：
+/// - ERROR_ACCESS_DENIED(5)：最常见，无写/删除权限
+/// - ERROR_PRIVILEGE_NOT_HELD(1314)：缺少所需特权
+/// - ERROR_SHARING_VIOLATION(32)、ERROR_LOCK_VIOLATION(33)：文件被占用，
+///   提权通常无效，但部分系统进程占用的文件需 TrustedInstaller 才能处理；
+///   为保证「任何情况都能请求提权」，一并纳入（最终能否成功由提权进程决定）
+fn is_permission_error(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        return true;
+    }
+    matches!(error.raw_os_error(), Some(5) | Some(32) | Some(33) | Some(1314))
 }
 
 /// 若当前进程是提权文件操作子进程，则执行操作并返回 true。
@@ -65,7 +84,16 @@ pub fn handle_startup_args() -> bool {
             }),
         ElevatedOp::Recycle if !values.is_empty() => {
             let paths: Vec<PathBuf> = values.iter().map(PathBuf::from).collect();
-            crate::fs::recyclebin::move_to_recycle_bin(&paths)
+            // 提权后回收仍可能失败（系统文件/被占用文件无法移入回收站）。
+            // 此时回退到永久删除，确保「请求管理员权限并删除」始终达成。
+            match crate::fs::recyclebin::move_to_recycle_bin(&paths) {
+                Ok(()) => Ok(()),
+                Err(_) => permanent_delete_all(&paths),
+            }
+        }
+        ElevatedOp::Delete if !values.is_empty() => {
+            let paths: Vec<PathBuf> = values.iter().map(PathBuf::from).collect();
+            permanent_delete_all(&paths)
         }
         _ => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -82,13 +110,22 @@ fn invalid_name() -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, "文件名不是有效 Unicode")
 }
 
+/// 永久删除一批路径（文件夹递归、文件直接删）。任一失败即返回首个错误。
+fn permanent_delete_all(paths: &[PathBuf]) -> std::io::Result<()> {
+    for p in paths {
+        crate::fs::operations::delete(p)?;
+    }
+    Ok(())
+}
+
 /// 仅在权限被拒绝时请求 UAC；返回是否成功启动提权子进程。
+/// 采用放宽后的权限错误判定（见 is_permission_error），覆盖更多「需要管理员」的情形。
 pub fn retry_if_permission_denied(
     error: &std::io::Error,
     op: ElevatedOp,
     args: &[OsString],
 ) -> bool {
-    if error.kind() != std::io::ErrorKind::PermissionDenied && error.raw_os_error() != Some(5) {
+    if !is_permission_error(error) {
         return false;
     }
     run_as_admin(op, args)

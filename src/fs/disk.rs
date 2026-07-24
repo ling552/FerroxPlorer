@@ -63,11 +63,26 @@ pub fn disk_entries() -> Vec<Entry> {
     list_disks().into_iter().map(|d| d.to_entry()).collect()
 }
 
+/// 查询单个盘符的驱动器信息（类型/容量/卷标）。
+/// 状态栏每次刷新只需要当前路径所在的盘：避免全盘枚举时被休眠硬盘、
+/// 失联网络驱动器或无碟光驱的容量/卷标查询阻塞。
+#[cfg(windows)]
+pub fn disk_info_of(letter: char) -> Option<DiskInfo> {
+    let letter = letter.to_ascii_uppercase();
+    if !letter.is_ascii_alphabetic() {
+        return None;
+    }
+    query_disk(letter)
+}
+
+#[cfg(not(windows))]
+pub fn disk_info_of(_letter: char) -> Option<DiskInfo> {
+    None
+}
+
 #[cfg(windows)]
 pub fn list_disks() -> Vec<DiskInfo> {
-    use windows_sys::Win32::Storage::FileSystem::{
-        GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
-    };
+    use windows_sys::Win32::Storage::FileSystem::GetLogicalDrives;
 
     let mut disks = Vec::new();
     let mask = unsafe { GetLogicalDrives() };
@@ -76,70 +91,86 @@ pub fn list_disks() -> Vec<DiskInfo> {
             continue;
         }
         let letter = (b'A' + i as u8) as char;
-        let root = format!("{}:\\", letter);
-        let wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
-
-        let drive_type = unsafe { GetDriveTypeW(wide.as_ptr()) };
-        let kind = match drive_type {
-            3 => DriveKind::Fixed,
-            2 => DriveKind::Removable,
-            5 => DriveKind::Optical,
-            4 => DriveKind::Network,
-            6 => DriveKind::Ram,
-            _ => DriveKind::Unknown,
-        };
-
-        let mut free_avail: u64 = 0;
-        let mut total: u64 = 0;
-        let mut total_free: u64 = 0;
-        let ok = unsafe {
-            GetDiskFreeSpaceExW(wide.as_ptr(), &mut free_avail, &mut total, &mut total_free)
-        };
-        if ok == 0 {
-            free_avail = 0;
-            total = 0;
+        if let Some(d) = query_disk(letter) {
+            disks.push(d);
         }
-
-        let mut volume_name = [0u16; 260];
-        let volume_ok = unsafe {
-            GetVolumeInformationW(
-                wide.as_ptr(),
-                volume_name.as_mut_ptr(),
-                volume_name.len() as u32,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                0,
-            )
-        } != 0;
-        let label = if volume_ok {
-            let len = volume_name.iter().position(|&c| c == 0).unwrap_or(0);
-            String::from_utf16_lossy(&volume_name[..len])
-                .trim()
-                .to_string()
-        } else {
-            String::new()
-        };
-
-        let fallback = match kind {
-            DriveKind::Fixed if letter == 'C' => "Windows".to_string(),
-            DriveKind::Fixed => "本地磁盘".to_string(),
-            _ => kind.label().to_string(),
-        };
-        let base_name = if label.is_empty() { fallback } else { label };
-        let name = format!("{} ({}:)", base_name, letter);
-
-        disks.push(DiskInfo {
-            letter: letter.to_string(),
-            name,
-            root,
-            total,
-            free: free_avail,
-            kind,
-        });
     }
     disks
+}
+
+/// 查询单个盘符的完整信息（list_disks 与 disk_info_of 共用）
+#[cfg(windows)]
+fn query_disk(letter: char) -> Option<DiskInfo> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetDiskFreeSpaceExW, GetDriveTypeW, GetVolumeInformationW,
+    };
+
+    let root = format!("{}:\\", letter);
+    let wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
+
+    let drive_type = unsafe { GetDriveTypeW(wide.as_ptr()) };
+    // DRIVE_NO_ROOT_DIR(1)：盘符不存在（disk_info_of 传入任意字母时的防御）
+    if drive_type == 1 {
+        return None;
+    }
+    let kind = match drive_type {
+        3 => DriveKind::Fixed,
+        2 => DriveKind::Removable,
+        5 => DriveKind::Optical,
+        4 => DriveKind::Network,
+        6 => DriveKind::Ram,
+        _ => DriveKind::Unknown,
+    };
+
+    let mut free_avail: u64 = 0;
+    let mut total: u64 = 0;
+    let mut total_free: u64 = 0;
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(wide.as_ptr(), &mut free_avail, &mut total, &mut total_free)
+    };
+    if ok == 0 {
+        free_avail = 0;
+        total = 0;
+    }
+
+    let mut volume_name = [0u16; 260];
+    let volume_ok = unsafe {
+        GetVolumeInformationW(
+            wide.as_ptr(),
+            volume_name.as_mut_ptr(),
+            volume_name.len() as u32,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+        )
+    } != 0;
+    let label = if volume_ok {
+        let len = volume_name.iter().position(|&c| c == 0).unwrap_or(0);
+        String::from_utf16_lossy(&volume_name[..len])
+            .trim()
+            .to_string()
+    } else {
+        String::new()
+    };
+
+    let fallback = match kind {
+        DriveKind::Fixed if letter == 'C' => "Windows".to_string(),
+        DriveKind::Fixed => "本地磁盘".to_string(),
+        _ => kind.label().to_string(),
+    };
+    let base_name = if label.is_empty() { fallback } else { label };
+    let name = format!("{} ({}:)", base_name, letter);
+
+    Some(DiskInfo {
+        letter: letter.to_string(),
+        name,
+        root,
+        total,
+        free: free_avail,
+        kind,
+    })
 }
 
 #[cfg(not(windows))]
