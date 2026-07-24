@@ -3,7 +3,7 @@
 现代化 Windows 桌面文件管理器,使用 **Rust + Slint** 实现。
 
 ![Platform](https://img.shields.io/badge/platform-Windows-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
+[![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/ling552/FerroxPlorer/blob/main/LICENSE)
 
 ![ico](icon.webp)
 
