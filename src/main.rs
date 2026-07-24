@@ -33,6 +33,10 @@ fn startup_path(setting: &str) -> PathBuf {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    // UAC 提权子进程只执行白名单文件操作，不创建主窗口。
+    if fs::elevated::handle_startup_args() {
+        return Ok(());
+    }
     // 安装程序卸载前调用：不创建窗口，只安全恢复仍由本应用持有的 Shell 关联。
     if std::env::args_os().any(|arg| arg == "--unregister-default-file-manager") {
         let _ = fs::default_app::set_default(false);
@@ -1398,12 +1402,32 @@ fn rename_in_pane(
         .map(|e| PathBuf::from(&e.path));
     if let Some(old) = old {
         if !new_name.trim().is_empty() {
-            if let Ok(new_path) = ops::rename(&old, new_name) {
-                // 记录撤销：orig=旧完整路径, renamed=新完整路径
-                c.borrow_mut().record_undo(app::UndoAction::Rename {
-                    orig: old.clone(),
-                    renamed: new_path,
-                });
+            match ops::rename(&old, new_name) {
+                Ok(new_path) => {
+                    c.borrow_mut().record_undo(app::UndoAction::Rename {
+                        orig: old.clone(),
+                        renamed: new_path,
+                    });
+                }
+                Err(error) => {
+                    let args = vec![old.as_os_str().to_os_string(), new_name.into()];
+                    let elevated = fs::elevated::retry_if_permission_denied(
+                        &error,
+                        fs::elevated::ElevatedOp::Rename,
+                        &args,
+                    );
+                    if elevated {
+                        schedule_pane_reloads_for(ui, c, right, &[800, 2000]);
+                    }
+                    ui.global::<AppState>().set_status_text(
+                        if elevated {
+                            "已请求管理员权限重命名"
+                        } else {
+                            "重命名失败"
+                        }
+                        .into(),
+                    );
+                }
             }
         }
     }
@@ -1451,6 +1475,28 @@ fn schedule_pane_reloads(ui: &MainWindow, core: &Rc<RefCell<AppCore>>, delays_ms
         slint::Timer::single_shot(std::time::Duration::from_millis(delay), move || {
             if let Some(ui) = w.upgrade() {
                 reload_active_pane(&ui, &c);
+            }
+        });
+    }
+}
+
+/// 在指定延迟点补刷固定面板，避免异步操作期间用户切换活动面板后刷新错侧。
+fn schedule_pane_reloads_for(
+    ui: &MainWindow,
+    core: &Rc<RefCell<AppCore>>,
+    right: bool,
+    delays_ms: &[u64],
+) {
+    for &delay in delays_ms {
+        let w = ui.as_weak();
+        let c = core.clone();
+        slint::Timer::single_shot(std::time::Duration::from_millis(delay), move || {
+            if let Some(ui) = w.upgrade() {
+                if right {
+                    load_right(&ui, &c);
+                } else {
+                    load_current(&ui, &c);
+                }
             }
         });
     }
@@ -2445,7 +2491,21 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                     });
                     format!("已将 {} 个项目移入回收站", n)
                 }
-                Err(e) => format!("删除失败：{}", e),
+                Err(e) => {
+                    let args: Vec<std::ffi::OsString> = paths
+                        .iter()
+                        .map(|path| path.as_os_str().to_os_string())
+                        .collect();
+                    if fs::elevated::retry_if_permission_denied(
+                        &e,
+                        fs::elevated::ElevatedOp::Recycle,
+                        &args,
+                    ) {
+                        "已请求管理员权限，操作完成后将自动刷新".to_string()
+                    } else {
+                        format!("删除失败：{}", e)
+                    }
+                }
             };
             reload_active_pane(&ui, &c);
             // 大文件夹的回收站移动由 Shell 异步收尾，立即 reload 可能仍读到旧目录项；
@@ -2479,10 +2539,27 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         if let Some(ui) = w.upgrade() {
             let right = toolbar_routes_right(&ui);
             let dst = c.borrow().pane(right).history.current().clone();
-            if let Ok(path) = ops::new_folder(&dst, "新建文件夹") {
-                c.borrow_mut().record_undo(app::UndoAction::Create { path });
+            match ops::new_folder(&dst, "新建文件夹") {
+                Ok(path) => c.borrow_mut().record_undo(app::UndoAction::Create { path }),
+                Err(error) => {
+                    let args = vec![dst.as_os_str().to_os_string(), "新建文件夹".into()];
+                    let elevated = fs::elevated::retry_if_permission_denied(
+                        &error,
+                        fs::elevated::ElevatedOp::CreateDir,
+                        &args,
+                    );
+                    ui.global::<AppState>().set_status_text(
+                        if elevated {
+                            "已请求管理员权限创建文件夹"
+                        } else {
+                            "创建文件夹失败"
+                        }
+                        .into(),
+                    );
+                }
             }
             reload_active_pane(&ui, &c);
+            schedule_pane_reloads(&ui, &c, &[800, 2000]);
         }
     });
 
@@ -2493,10 +2570,30 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         if let Some(ui) = w.upgrade() {
             let right = toolbar_routes_right(&ui);
             let dst = c.borrow().pane(right).history.current().clone();
-            if let Ok(path) = ops::new_file(&dst, "新建文本文档.txt") {
-                c.borrow_mut().record_undo(app::UndoAction::Create { path });
+            match ops::new_file(&dst, "新建文本文档.txt") {
+                Ok(path) => c.borrow_mut().record_undo(app::UndoAction::Create { path }),
+                Err(error) => {
+                    let args = vec![
+                        dst.as_os_str().to_os_string(),
+                        "新建文本文档.txt".into(),
+                    ];
+                    let elevated = fs::elevated::retry_if_permission_denied(
+                        &error,
+                        fs::elevated::ElevatedOp::CreateFile,
+                        &args,
+                    );
+                    ui.global::<AppState>().set_status_text(
+                        if elevated {
+                            "已请求管理员权限创建文件"
+                        } else {
+                            "创建文件失败"
+                        }
+                        .into(),
+                    );
+                }
             }
             reload_active_pane(&ui, &c);
+            schedule_pane_reloads(&ui, &c, &[800, 2000]);
         }
     });
 
@@ -2655,7 +2752,9 @@ fn bind_new_menu(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         let weak = ui.as_weak();
         std::thread::spawn(move || {
             for (row, ext) in exts.into_iter().enumerate() {
-                let Some((pixels, w, h)) = fs::thumbnail::extract_type_icon(&ext, 32) else {
+                let Some((pixels, w, h)) =
+                    fs::thumbnail::extract_type_icon(&ext, ext.is_empty(), 32)
+                else {
                     continue;
                 };
                 let weak2 = weak.clone();
@@ -2937,7 +3036,16 @@ fn bind_context_menu_ext(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         }
     });
 
-    // 按路径弹出系统右键菜单（侧边栏项：快速访问/磁盘/此电脑/回收站/网络等）。
+    // 侧栏使用导航语义菜单，不复用文件对象的完整 Shell 菜单。
+    let w = ui.as_weak();
+    let c = core.clone();
+    state.on_show_sidebar_menu(move |path, mx, my| {
+        if let Some(ui) = w.upgrade() {
+            show_sidebar_menu(&ui, &c, path.as_str(), mx, my);
+        }
+    });
+
+    // 按路径弹出系统右键菜单（侧栏之外的兼容入口）。
     // 虚拟 scheme 先映射为 Shell 命名空间解析名（::{CLSID}），无对应物的静默跳过。
     let w = ui.as_weak();
     let c = core.clone();
@@ -3015,12 +3123,12 @@ fn bind_context_menu_ext(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             // 模态 OLE 拖拽（阻塞至放下/取消）；期间左键 up 被 OLE 吃掉
             let effect = fs::drag_out::run(&paths);
             // 合成一次窗口外的左键释放，复位 Slint 指针抓取/按下状态
-            let _ = ui.window().try_dispatch_event(
-                slint::platform::WindowEvent::PointerReleased {
+            let _ = ui
+                .window()
+                .try_dispatch_event(slint::platform::WindowEvent::PointerReleased {
                     position: slint::LogicalPosition::new(-10.0, -10.0),
                     button: slint::platform::PointerEventButton::Left,
-                },
-            );
+                });
             st.set_pane_drag_active(false);
             // 目标应用执行「移动」时源文件将消失：刷新 + 延迟补刷（Shell 异步收尾）
             if effect == 2 {
@@ -3063,6 +3171,83 @@ fn bind_context_menu_ext(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             );
         }
     });
+}
+
+/// 弹出侧栏专用菜单并执行导航操作。
+#[cfg(windows)]
+fn show_sidebar_menu(ui: &MainWindow, core: &Rc<RefCell<AppCore>>, path: &str, mx: f32, my: f32) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    if path.is_empty() {
+        return;
+    }
+    let real_dir = !fs::virtualfs::is_virtual(path) && Path::new(path).is_dir();
+    let can_unpin = real_dir
+        && fs::quickaccess::list()
+            .iter()
+            .any(|item| item.path.eq_ignore_ascii_case(path));
+    let mut command = None;
+    ui.window().with_winit_window(|winit_window| {
+        let Ok(origin) = winit_window.inner_position() else {
+            return;
+        };
+        let Ok(handle) = winit_window.window_handle() else {
+            return;
+        };
+        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+            return;
+        };
+        let scale = winit_window.scale_factor() as f32;
+        command = fs::sidebar_menu::show(
+            isize::from(handle.hwnd),
+            origin.x + (mx * scale).round() as i32,
+            origin.y + (my * scale).round() as i32,
+            real_dir,
+            can_unpin,
+        );
+    });
+
+    use fs::sidebar_menu::SidebarCommand;
+    match command {
+        Some(SidebarCommand::Open) => navigate_to(ui, core, PathBuf::from(path)),
+        Some(SidebarCommand::OpenNewTab) => {
+            core.borrow_mut().new_tab(PathBuf::from(path));
+            load_current(ui, core);
+        }
+        Some(SidebarCommand::OpenNewPanel) => {
+            navigate_right(ui, core, PathBuf::from(path));
+            ui.global::<AppState>().set_dual_pane(true);
+        }
+        Some(SidebarCommand::Unpin) => {
+            let ok = fs::quickaccess::unpin(path);
+            let c = core.borrow();
+            ui.global::<AppState>()
+                .set_nav_items(ui_bridge::build_sidebar(
+                    c.active_tab().history.current(),
+                    &c.collapsed_sections,
+                    &c.config,
+                ));
+            ui.global::<AppState>().set_status_text(
+                if ok {
+                    "已从快速访问取消固定"
+                } else {
+                    "取消固定失败"
+                }
+                .into(),
+            );
+        }
+        _ => {}
+    }
+}
+
+#[cfg(not(windows))]
+fn show_sidebar_menu(
+    _ui: &MainWindow,
+    _core: &Rc<RefCell<AppCore>>,
+    _path: &str,
+    _mx: f32,
+    _my: f32,
+) {
 }
 
 /// 把窗口内逻辑坐标 (mx,my) 换算为屏幕物理坐标，并弹出系统原生右键菜单。
@@ -3823,6 +4008,7 @@ fn bind_hash(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             if ui_bridge::fill_quicklook(&ui, &c.borrow(), right) {
                 let st = ui.global::<AppState>();
                 st.set_quicklook_open(true);
+                st.set_ql_video_fullscreen(false);
                 let path = st.get_sel_path().to_string();
                 if st.get_ql_kind() == 4 {
                     // 视频：在预览内容区之上启动 Media Foundation 子窗口播放（含音频）
@@ -3850,7 +4036,27 @@ fn bind_hash(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         if let Some(ui) = w.upgrade() {
             fs::video_preview::stop();
             fs::web_preview::stop();
-            ui.global::<AppState>().set_quicklook_open(false);
+            let st = ui.global::<AppState>();
+            if st.get_ql_video_fullscreen() {
+                set_quicklook_window_fullscreen(&ui, false);
+            }
+            st.set_ql_video_fullscreen(false);
+            st.set_quicklook_open(false);
+        }
+    });
+
+    // 视频全屏：复用当前播放器，把主窗口切换为当前显示器的无边框全屏。
+    let w = ui.as_weak();
+    state.on_ql_toggle_video_fullscreen(move || {
+        if let Some(ui) = w.upgrade() {
+            let st = ui.global::<AppState>();
+            if !st.get_quicklook_open() || st.get_ql_kind() != 4 {
+                return;
+            }
+            let fullscreen = !st.get_ql_video_fullscreen();
+            st.set_ql_video_fullscreen(fullscreen);
+            set_quicklook_window_fullscreen(&ui, fullscreen);
+            schedule_video_repositions(&ui, &[40, 180]);
         }
     });
 
@@ -3895,14 +4101,88 @@ fn quicklook_content_rect_phys(ui: &MainWindow) -> Option<(i32, i32, i32, i32)> 
         let card_y = (win_h - card_h) / 2.0;
         let content_y = card_y + ui_bridge::QL_HEADER_H * scale;
         let content_h = card_h - (ui_bridge::QL_HEADER_H + ui_bridge::QL_FOOTER_H) * scale;
-        out = Some((
-            card_x as i32,
-            content_y as i32,
-            card_w as i32,
-            content_h as i32,
-        ));
+        let mut x = card_x;
+        let mut y = content_y;
+        let mut width = card_w;
+        let mut height = content_h;
+        if st.get_ql_kind() == 4 {
+            let vw = st.get_ql_img_w().max(0) as f32;
+            let vh = st.get_ql_img_h().max(0) as f32;
+            if vw > 0.0 && vh > 0.0 {
+                let fit = (card_w / vw).min(content_h / vh);
+                width = vw * fit;
+                height = vh * fit;
+                x += (card_w - width) / 2.0;
+                y += (content_h - height) / 2.0;
+            }
+        }
+        out = Some((x as i32, y as i32, width as i32, height as i32));
     });
     out
+}
+
+/// 切换主窗口无边框全屏。
+fn set_quicklook_window_fullscreen(ui: &MainWindow, fullscreen: bool) {
+    ui.window().with_winit_window(|window| {
+        window.set_fullscreen(if fullscreen {
+            Some(winit::window::Fullscreen::Borderless(window.current_monitor()))
+        } else {
+            None
+        });
+    });
+}
+
+/// 全屏切换后窗口尺寸异步更新，按固定延迟重对齐视频子窗口。
+fn schedule_video_repositions(ui: &MainWindow, delays_ms: &[u64]) {
+    for &delay in delays_ms {
+        let weak = ui.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(delay), move || {
+            if let Some(ui) = weak.upgrade() {
+                let st = ui.global::<AppState>();
+                if !st.get_quicklook_open() || st.get_ql_kind() != 4 {
+                    return;
+                }
+                let rect = if st.get_ql_video_fullscreen() {
+                    quicklook_fullscreen_rect_phys(&ui)
+                } else {
+                    quicklook_content_rect_phys(&ui)
+                };
+                if let Some(rect) = rect {
+                    fs::video_preview::reposition(rect);
+                }
+            }
+        });
+    }
+}
+
+/// 主窗口客户区全屏矩形（物理像素）。
+#[cfg(windows)]
+fn quicklook_fullscreen_rect_phys(ui: &MainWindow) -> Option<(i32, i32, i32, i32)> {
+    let mut out = None;
+    let st = ui.global::<AppState>();
+    ui.window().with_winit_window(|window| {
+        let size = window.inner_size();
+        let mut width = size.width as f32;
+        let mut height = size.height as f32;
+        let mut x = 0.0;
+        let mut y = 0.0;
+        let vw = st.get_ql_img_w().max(0) as f32;
+        let vh = st.get_ql_img_h().max(0) as f32;
+        if vw > 0.0 && vh > 0.0 {
+            let fit = (width / vw).min(height / vh);
+            width = vw * fit;
+            height = vh * fit;
+            x = (size.width as f32 - width) / 2.0;
+            y = (size.height as f32 - height) / 2.0;
+        }
+        out = Some((x as i32, y as i32, width as i32, height as i32));
+    });
+    out
+}
+
+#[cfg(not(windows))]
+fn quicklook_fullscreen_rect_phys(_ui: &MainWindow) -> Option<(i32, i32, i32, i32)> {
+    None
 }
 
 /// 取主窗口 HWND（isize；窗口未就绪返回 0）
@@ -3967,7 +4247,11 @@ fn on_video_size_ready(ui: &MainWindow, vw: u32, vh: u32) {
         st.set_ql_subtitle(format!("{} 像素 · {}", res, sub).into());
     }
     ui_bridge::apply_ql_card_size(ui, 4, vw as i32, vh as i32, false);
-    if let Some(rect) = quicklook_content_rect_phys(ui) {
+    if let Some(rect) = if st.get_ql_video_fullscreen() {
+        quicklook_fullscreen_rect_phys(ui)
+    } else {
+        quicklook_content_rect_phys(ui)
+    } {
         fs::video_preview::reposition(rect);
     }
 }

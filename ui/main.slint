@@ -83,6 +83,10 @@ export component MainWindow inherits Window {
         key-pressed(ev) => {
             // Quick Look 已打开：空格 / Esc 关闭，吞掉其它按键避免误触
             if (AppState.quicklook-open) {
+                if (ev.text == Key.Escape && AppState.ql-video-fullscreen) {
+                    AppState.ql-toggle-video-fullscreen();
+                    return accept;
+                }
                 if (ev.text == " " || ev.text == Key.Escape) {
                     AppState.close-quicklook();
                     return accept;

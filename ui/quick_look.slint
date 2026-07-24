@@ -10,15 +10,17 @@ import { ScrollView } from "std-widgets.slint";
 export component QuickLook inherits Rectangle {
     visible: AppState.quicklook-open;
 
-    // 半透明遮罩：点击关闭
+    background: AppState.ql-video-fullscreen ? black : transparent;
+
+    // 半透明遮罩：点击关闭；视频全屏时作为纯黑留边背景。
     Rectangle {
-        background: #12223455;
+        background: AppState.ql-video-fullscreen ? black : #12223455;
         TouchArea { clicked => { AppState.close-quicklook(); } }
     }
 
     // 预览卡片：尺寸由 Rust 按内容类型自适应计算（图片/视频按分辨率、
     // 文件夹紧凑、网页渲染更大；最小 256×256 内容区）
-    Rectangle {
+    if !AppState.ql-video-fullscreen: Rectangle {
         width: AppState.ql-card-w;
         height: AppState.ql-card-h;
         border-radius: Theme.radius-dialog;
@@ -102,6 +104,22 @@ export component QuickLook inherits Rectangle {
                                 source-btn := TouchArea { clicked => { AppState.ql-set-web-mode(false); } }
                             }
                         }
+                    }
+                    // 视频全屏按钮
+                    if AppState.ql-kind == 4: Rectangle {
+                        width: 30px; height: 30px;
+                        y: 4px;
+                        border-radius: 8px;
+                        background: fsbtn.has-hover ? Theme.primary-hover : transparent;
+                        Text {
+                            text: AppState.ql-video-fullscreen ? "\u{E73F}" : "\u{E740}";
+                            font-family: "Segoe MDL2 Assets";
+                            font-size: 14px;
+                            color: fsbtn.has-hover ? Theme.primary : Theme.muted;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        fsbtn := TouchArea { clicked => { AppState.ql-toggle-video-fullscreen(); } }
                     }
                     // 关闭按钮（MDL2 图标，与标题栏风格一致）
                     Rectangle {
@@ -220,54 +238,18 @@ export component QuickLook inherits Rectangle {
                     }
                 }
 
-                // 文本/代码预览（ql-kind == 2 源码模式）：四层等宽字体原位叠加实现语法高亮
-                // （Slint Text 不支持富文本；层与层逐字符对齐，禁用换行保证列不漂移）
+                // 文本/代码预览（ql-kind == 2 源码模式）：单层等宽文本保证行高与字形稳定。
+                // Slint Text 不支持富文本，多层字符遮罩在混合中英文时会产生基线偏移。
                 if AppState.ql-kind == 2 && !AppState.ql-web-mode: ScrollView {
                     VerticalLayout {
                         padding: 16px;
-                        Rectangle {
-                            width: max(code-base.preferred-width, 1px);
-                            height: max(code-base.preferred-height, 1px);
-                            // 注释层（绿）
-                            Text {
-                                x: 0; y: 0; width: 100%; height: 100%;
-                                text: AppState.ql-code-cmt;
-                                font-size: Theme.fs-small;
-                                font-family: "Consolas";
-                                color: Theme.dark ? #6A9955 : #008000;
-                                horizontal-alignment: left;
-                                vertical-alignment: top;
-                            }
-                            // 字符串层（橙/深红）
-                            Text {
-                                x: 0; y: 0; width: 100%; height: 100%;
-                                text: AppState.ql-code-str;
-                                font-size: Theme.fs-small;
-                                font-family: "Consolas";
-                                color: Theme.dark ? #CE9178 : #A31515;
-                                horizontal-alignment: left;
-                                vertical-alignment: top;
-                            }
-                            // 关键字与数字层（蓝）
-                            Text {
-                                x: 0; y: 0; width: 100%; height: 100%;
-                                text: AppState.ql-code-kw;
-                                font-size: Theme.fs-small;
-                                font-family: "Consolas";
-                                color: Theme.dark ? #569CD6 : #0000FF;
-                                horizontal-alignment: left;
-                                vertical-alignment: top;
-                            }
-                            // 正文层
-                            code-base := Text {
-                                x: 0; y: 0; width: 100%; height: 100%;
-                                text: AppState.ql-text;
-                                font-size: Theme.fs-small;
-                                font-family: "Consolas";
-                                color: Theme.text;
-                                horizontal-alignment: left;
-                                vertical-alignment: top;
-                            }
+                        code-base := Text {
+                            text: AppState.ql-text;
+                            font-size: Theme.fs-small;
+                            font-family: "Consolas";
+                            color: Theme.text;
+                            horizontal-alignment: left;
+                            vertical-alignment: top;
                         }
                     }
                 }

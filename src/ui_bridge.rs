@@ -1357,7 +1357,17 @@ pub fn apply_ql_card_size(ui: &MainWindow, kind_code: i32, iw: i32, ih: i32, web
         1 | 4 => {
             if iw > 0 && ih > 0 {
                 let fit = (max_cw / iw as f32).min(max_ch / ih as f32).min(1.0);
-                ((iw as f32 * fit).max(256.0), (ih as f32 * fit).max(256.0))
+                let mut width = iw as f32 * fit;
+                let mut height = ih as f32 * fit;
+                // 小视频可适度等比放大，但绝不分别钳制宽高，否则竖屏会被压扁。
+                if width < 256.0 && height < 256.0 {
+                    let grow = (256.0 / width.max(height))
+                        .min(max_cw / width)
+                        .min(max_ch / height);
+                    width *= grow;
+                    height *= grow;
+                }
+                (width.max(1.0), height.max(1.0))
             } else {
                 // 视频分辨率未知（异步加载中）：先按 16:9 常规尺寸，就绪后再调整
                 (704.0_f32.min(max_cw), 396.0_f32.min(max_ch))

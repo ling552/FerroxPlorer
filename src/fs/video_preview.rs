@@ -11,6 +11,26 @@
 //! MFPlay 通过隐藏窗口把事件序列化回创建线程（UI 线程）的消息循环，回调内可安全
 //! 调用播放器方法；分辨率就绪后经 `ready` 回调上报（预览卡片按视频宽高比自适应）。
 
+fn display_size(native: (u32, u32), aspect: (u32, u32)) -> (u32, u32) {
+    let (nw, nh) = native;
+    let (aw, ah) = aspect;
+    if nw == 0 || nh == 0 {
+        return (0, 0);
+    }
+    if aw == 0 || ah == 0 {
+        return native;
+    }
+    let native_portrait = nw < nh;
+    let aspect_portrait = aw < ah;
+    let display_height = if native_portrait == aspect_portrait {
+        nh as u64
+    } else {
+        nw as u64
+    };
+    let display_width = ((display_height * aw as u64) / ah as u64).max(1);
+    (display_width as u32, display_height as u32)
+}
+
 /// 启动播放：`parent` 为主窗口 HWND（isize），`rect` 为子窗口在父窗口客户区内的
 /// 物理像素位置 (x, y, w, h)，`path` 为视频文件完整路径。
 /// `ready(视频宽, 视频高)` 在媒体项就绪、开始播放时回调（UI 线程消息循环内）。
@@ -122,16 +142,21 @@ mod win_impl {
                         }
                         let _ev = &*(peventheader as *const MFP_MEDIAITEM_SET_EVENT);
                         let _ = player.Play();
-                        // 上报原生分辨率（供预览卡片按宽高比自适应）
+                        // 优先使用 Media Foundation 计算后的显示宽高比尺寸。
+                        // 它已包含非方形像素等修正，竖屏素材不能只用编码帧尺寸。
                         let mut native = SIZE::default();
-                        let mut ar = SIZE::default();
+                        let mut display = SIZE::default();
                         if player
-                            .GetNativeVideoSize(Some(&mut native), Some(&mut ar))
+                            .GetNativeVideoSize(Some(&mut native), Some(&mut display))
                             .is_ok()
-                            && native.cx > 0
-                            && native.cy > 0
                         {
-                            (self.ready)(native.cx as u32, native.cy as u32);
+                            let size = super::display_size(
+                                (native.cx.max(0) as u32, native.cy.max(0) as u32),
+                                (display.cx.max(0) as u32, display.cy.max(0) as u32),
+                            );
+                            if size.0 > 0 && size.1 > 0 {
+                                (self.ready)(size.0, size.1);
+                            }
                         }
                     }
                     _ => {}
@@ -232,5 +257,26 @@ mod win_impl {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_size;
+
+    #[test]
+    fn display_size_keeps_landscape_and_portrait() {
+        assert_eq!(display_size((1920, 1080), (16, 9)), (1920, 1080));
+        assert_eq!(display_size((1080, 1920), (9, 16)), (1080, 1920));
+    }
+
+    #[test]
+    fn display_size_applies_rotation_aspect() {
+        assert_eq!(display_size((1920, 1080), (9, 16)), (1080, 1920));
+    }
+
+    #[test]
+    fn display_size_applies_non_square_pixels() {
+        assert_eq!(display_size((720, 576), (16, 9)), (1024, 576));
     }
 }
