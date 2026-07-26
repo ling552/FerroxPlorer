@@ -62,6 +62,8 @@ component RightList inherits Rectangle {
                         y: (parent.height - self.height) / 2;
                         text: entry.name;
                         font-size: Theme.fs-small;
+                        // 文本变化时保存到全局
+                        text-changed(t) => { AppState.r-rename-text = t; }
                         // 按 Escape 退出重命名
                         cancel => { AppState.r-editing-index = -1; }
                         commit(t) => {
@@ -169,6 +171,8 @@ component RightGrid inherits Rectangle {
                             if AppState.r-editing-index == cell.idx: RenameEdit {
                                 text: card.entry.name;
                                 font-size: Theme.fs-small;
+                                // 文本变化时保存到全局
+                                text-changed(t) => { AppState.r-rename-text = t; }
                                 // 按 Escape 退出重命名
                                 cancel => { AppState.r-editing-index = -1; }
                                 commit(t) => {

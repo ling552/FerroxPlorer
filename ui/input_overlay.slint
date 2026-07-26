@@ -43,8 +43,9 @@ export component InputOverlay inherits TouchArea {
     // 按下时是否按住 Shift：双面板模式下 Shift+拖动条目 = OLE 拖出（普通拖动为跨面板）
     property <bool> press-shift: false;
 
-    // 任一面板处于行内重命名时禁用，事件回落到 ListView 内的输入框
-    enabled: AppState.editing-index < 0 && AppState.r-editing-index < 0;
+    // 任一面板处于行内重命名时，InputOverlay 仍然保持启用以捕获点击事件。
+    // 点击后先提交编辑内容，再处理正常的点击/选择逻辑。
+    // 不设 enabled=false，否则重命名期间点击外部区域无法提交编辑。
     mouse-cursor: pointer;
 
     // ── 几何换算（无局部变量，借助纯函数组合）──
@@ -158,6 +159,23 @@ export component InputOverlay inherits TouchArea {
 
     pointer-event(ev) => {
         if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.down) {
+            // 重命名进行中：先提交当前编辑再处理新的点击，避免丢失编辑内容
+            if (AppState.editing-index >= 0) {
+                let t = AppState.rename-text;
+                let idx = AppState.editing-index;
+                AppState.editing-index = -1;
+                if (t != "") {
+                    AppState.rename-entry(idx, t);
+                }
+            }
+            if (AppState.r-editing-index >= 0) {
+                let t = AppState.r-rename-text;
+                let idx = AppState.r-editing-index;
+                AppState.r-editing-index = -1;
+                if (t != "") {
+                    AppState.r-rename-entry(idx, t);
+                }
+            }
             root.press-x = self.mouse-x;
             root.press-y = self.mouse-y;
             root.press-ctrl = ev.modifiers.control;
@@ -197,12 +215,15 @@ export component InputOverlay inherits TouchArea {
                         // 「单击打开文件夹」：单击目录直接进入（等同双击）
                         root.do-open(root.press-idx);
                     } else if (AppState.set-click-rename && !AppState.set-single-click
-                               && plain && already-selected) {
+                               && plain && already-selected && !is-dir) {
                         // 「选中后单击重命名」：单击「已选中」的单个项进入行内重命名
+                        // 注意：文件夹跳过此逻辑，避免双击打开文件夹时误触发重命名
                         root.do-select(root.press-idx, false);
                         if (root.pane == "left") {
+                            AppState.rename-text = AppState.entries[root.press-idx].name;
                             AppState.editing-index = root.press-idx;
                         } else {
+                            AppState.r-rename-text = AppState.r-entries[root.press-idx].name;
                             AppState.r-editing-index = root.press-idx;
                         }
                     } else {

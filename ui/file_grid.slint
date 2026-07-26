@@ -94,6 +94,8 @@ export component FileGrid inherits Rectangle {
                             if AppState.editing-index == cell.idx: RenameEdit {
                                 text: card.entry.name;
                                 font-size: Theme.fs-small;
+                                // 文本变化时保存到全局
+                                text-changed(t) => { AppState.rename-text = t; }
                                 // 按 Escape 退出重命名
                                 cancel => { AppState.editing-index = -1; }
                                 commit(t) => {

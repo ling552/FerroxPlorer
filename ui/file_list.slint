@@ -454,7 +454,9 @@ export component FileList inherits Rectangle {
                             width: parent.width - root.name-indent;
                             y: (parent.height - self.height) / 2;
                             text: entry.name;
-                            // 按 Escape 退出重命名
+                            // 文本变化时保存到全局，方便点击外部区域时提交
+                            text-changed(t) => { AppState.rename-text = t; }
+                            // 按 Escape 退出重命名（不保存）
                             cancel => { AppState.editing-index = -1; }
                             commit(t) => {
                                 AppState.rename-entry(idx, t);

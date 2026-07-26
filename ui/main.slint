@@ -96,6 +96,8 @@ export component MainWindow inherits Window {
             // 空格键 Quick Look 预览：仅在非重命名编辑（任一面板）、非命令面板时触发
             if (ev.text == " " && AppState.editing-index == -1 && AppState.r-editing-index == -1
                 && !AppState.command-palette-open) {
+                // 确保键盘焦点在全局作用域，避免编辑框销毁后焦点丢失导致无法触发
+                key-scope.focus();
                 AppState.open-quicklook();
                 return accept;
             }
@@ -529,6 +531,15 @@ export component MainWindow inherits Window {
     }
     }
 
+    // 重命名编辑完成后归还焦点到全局快捷键作用域，确保空格键预览等快捷键可用
+    // 通过监听 editing-index 和 r-editing-index 属性变化来触发
+    focus-watcher := Rectangle {
+        property <int> ei: AppState.editing-index;
+        changed ei => { if (self.ei < 0) { key-scope.focus(); } }
+        property <int> rei: AppState.r-editing-index;
+        changed rei => { if (self.rei < 0) { key-scope.focus(); } }
+    }
+
     // 浮层：属性对话框
     props := PropertiesDialog {
         width: 100%;
@@ -608,9 +619,15 @@ export component MainWindow inherits Window {
     // 由 Rust 调用以进入/退出行内重命名（统一委托给 AppState.editing-index / r-editing-index）
     public function set-editing(idx: int) {
         AppState.editing-index = idx;
+        if (idx >= 0 && idx < AppState.entries.length) {
+            AppState.rename-text = AppState.entries[idx].name;
+        }
     }
     public function set-editing-right(idx: int) {
         AppState.r-editing-index = idx;
+        if (idx >= 0 && idx < AppState.r-entries.length) {
+            AppState.r-rename-text = AppState.r-entries[idx].name;
+        }
     }
     public function clear-editing() {
         AppState.editing-index = -1;

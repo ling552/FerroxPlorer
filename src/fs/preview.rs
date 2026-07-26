@@ -48,7 +48,7 @@ const VIDEO_EXTS: &[&str] = &[
 ];
 
 /// 可作为纯文本预览的扩展名（含常见源码 / 配置 / 文档）
-/// 注意：kind_of 已对非图片/视频/归档文件统一兜底为文本预览，本表仅供 renderable_web
+/// 注意：kind_of 已对非图片/视频/归档/二进制文件统一兜底为文本预览，本表仅供 renderable_web
 /// 之外的特殊判断参考，当前无直接引用，保留以备未来按扩展名区分高亮等用途。
 #[allow(dead_code)]
 const TEXT_EXTS: &[&str] = &[
@@ -57,6 +57,15 @@ const TEXT_EXTS: &[&str] = &[
     "kt", "rb", "php", "sh", "bat", "ps1", "css", "scss", "less", "html", "htm", "slint", "sql",
     "lua", "vue", "svelte", "gradle", "properties", "env", "gitignore", "dockerfile", "makefile",
     "gitattributes", "dockerignore", "npmignore", "editorconfig", "license", "readme", "lock",
+];
+
+/// 二进制/可执行文件扩展名：预览时显示应用基本信息而非文本内容
+const BINARY_EXTS: &[&str] = &[
+    "exe", "msi", "dll", "sys", "com", "scr",
+    "iso", "bin", "dat", "img", "vhd", "vhdx",
+    "cab", "msu", "dmp", "pdb",
+    "deb", "rpm", "appimage",
+    "dmg", "pkg",
 ];
 
 fn ext_of(path: &Path) -> String {
@@ -87,11 +96,19 @@ pub fn kind_of(path: &Path, is_dir: bool) -> PreviewKind {
         PreviewKind::Video
     } else if is_archive_kind(&ext, path) {
         PreviewKind::Archive
+    } else if is_binary_kind(&ext) {
+        // EXE/MSI/ISO 等二进制文件：显示应用基本信息而非文本内容
+        PreviewKind::Info
     } else {
         // 兜底用文本预览：文本文件显示内容，二进制文件由 read_text_head 的
         // NUL 检测给出「二进制内容，无法以文本预览」提示（用户要求大部分文件以文本打开）
         PreviewKind::Text
     }
+}
+
+/// 是否作为二进制/可执行文件（预览时显示信息而非文本）
+fn is_binary_kind(ext: &str) -> bool {
+    BINARY_EXTS.contains(&ext)
 }
 
 /// 是否作为归档预览（与 operations::is_archive 一致的格式集合）
@@ -229,16 +246,19 @@ fn format_listing(items: &[(String, u64, bool)]) -> String {
     }
     use std::fmt::Write;
     let mut out = String::new();
-    let _ = writeln!(out, "共 {} 项：", items.len());
     let dirs = items.iter().filter(|(_, _, d)| *d).count();
     let files = items.len() - dirs;
     let total: u64 = items.iter().map(|(_, s, _)| s).sum();
-    let _ = writeln!(out, "（{} 个文件夹，{} 个文件，合计 {}）\n", dirs, files, super::metadata::human_size(total));
+    let _ = writeln!(out, "📦 归档内容 | 共 {} 项", items.len());
+    let _ = writeln!(out, "   ├─ 📁 {} 个文件夹", dirs);
+    let _ = writeln!(out, "   ├─ 📄 {} 个文件", files);
+    let _ = writeln!(out, "   └─ 💾 合计 {}\n", super::metadata::human_size(total));
+    let _ = writeln!(out, "{}", "─".repeat(60));
     for (name, size, is_dir) in items {
         let _ = writeln!(
             out,
             "{}  {}",
-            if *is_dir { "[D]" } else { "[F]" },
+            if *is_dir { "📁" } else { "📄" },
             if *is_dir {
                 name.clone()
             } else {

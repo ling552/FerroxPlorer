@@ -7,6 +7,7 @@
 //!
 //! 由于 LineEdit 不允许有子元素（无 @children），这里用 Rectangle 包裹
 //! LineEdit 与 Timer，对外暴露 text/font-size 与 cancel/commit。
+//! 新增 text-changed 回调，用于在点击编辑框外部区域时提交当前文本。
 
 import { LineEdit } from "std-widgets.slint";
 
@@ -17,6 +18,8 @@ export component RenameEdit inherits Rectangle {
     callback cancel();
     // 提交新名称
     callback commit(string);
+    // 文本变化时通知父组件（用于保存当前键入内容，点击外部区域时提交）
+    callback text-changed(string);
 
     // 计时器装填标记：true 时 Timer 运行，触发一次后置 false
     property <bool> armed: true;
@@ -28,6 +31,8 @@ export component RenameEdit inherits Rectangle {
         width: 100%;
         text: root.text;
         font-size: root.font-size;
+        // 文本变化时通知父组件，以便点击外部区域时能提交当前编辑内容
+        edited(t) => { root.text-changed(t); }
         key-pressed(ev) => {
             if (ev.text == Key.Escape) {
                 root.cancel();

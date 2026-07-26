@@ -257,6 +257,10 @@ export global AppState {
     // 右面板正在重命名编辑的条目下标（-1 表示无）。与 editing-index 独立，
     // 避免双面板下同下标条目同时进入编辑
     in-out property <int> r-editing-index: -1;
+    // 当前重命名输入框中的文本（用于点击外部区域时提交）
+    in-out property <string> rename-text;
+    // 右面板重命名输入框中的文本
+    in-out property <string> r-rename-text;
     callback new-folder();
     callback new-file();
     // 撤销最近一次可逆操作（重命名 / 新建 / 移动 / 删除），Ctrl+Z 触发
