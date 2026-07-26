@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// 索引单条记录
+#[derive(Clone)]
 struct IndexEntry {
     path: String,       // 完整路径
     name_lower: String, // 文件名小写（大小写不敏感匹配用）
@@ -286,6 +287,144 @@ pub fn search(dir: &Path, query: &str, case_sensitive: bool, limit: usize) -> Op
         });
     }
     Some(results)
+}
+
+// ─── 增量更新 ─────────────────────────────────────────────────
+// 「启用后台索引」开启后，用户新增/删除/重命名文件应即时反映到索引，否则深层搜索
+// 找不到新文件。这里做轻量增量：内存索引即时更新（搜索立即可见），磁盘索引对
+// 新增项追加写入；删除/重命名产生的失效项不重写磁盘--search() 已用 metadata
+// 过滤掉不存在的路径，残留项无害，待下次全量重建自然清理。
+
+/// 路径规范化为 Windows 反斜杠形式，便于与索引中的路径比较。
+fn norm_path(p: &Path) -> String {
+    p.to_string_lossy().replace('/', "\\")
+}
+
+/// 把单条记录加入内存索引（去重），返回是否为新加入。
+fn mem_add(entries: &mut Vec<IndexEntry>, path_str: String, is_dir: bool) -> bool {
+    if entries.iter().any(|e| e.path == path_str) {
+        return false;
+    }
+    let name_lower = Path::new(&path_str)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    entries.push(IndexEntry {
+        path: path_str,
+        name_lower,
+        is_dir,
+    });
+    true
+}
+
+/// 向磁盘索引文件追加若干行（best-effort，失败忽略）。
+fn disk_append(lines: &[(String, bool)]) {
+    let Some(path) = index_file() else {
+        return;
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&path) {
+        for (p, is_dir) in lines {
+            let _ = writeln!(f, "{}\t{}", if *is_dir { "D" } else { "F" }, p);
+        }
+    }
+}
+
+/// 增量加入路径到索引：文件直接加入；目录递归加入整个子树。
+/// 仅在索引已加载（即用户已启用后台索引且索引就绪）时生效，否则无操作。
+pub fn add_path(path: &Path) {
+    let guard = match index_slot().lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    let Some(data) = guard.clone() else {
+        return; // 索引未加载：未启用或尚未建立，跳过
+    };
+    drop(guard);
+
+    let mut entries = data.entries.clone();
+    let path_str = norm_path(path);
+    let is_dir = path.is_dir();
+    let mut disk_lines: Vec<(String, bool)> = Vec::new();
+
+    if mem_add(&mut entries, path_str.clone(), is_dir) {
+        disk_lines.push((path_str.clone(), is_dir));
+    }
+    // 目录：递归加入子树（与 rebuild 同样的跳过规则，不跟随符号链接）
+    if is_dir {
+        let mut stack: Vec<PathBuf> = vec![path.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if skip_dir(&name) {
+                    continue;
+                }
+                let Ok(ft) = e.file_type() else { continue };
+                let p = e.path();
+                let child_str = norm_path(&p);
+                let child_dir = ft.is_dir();
+                if mem_add(&mut entries, child_str.clone(), child_dir) {
+                    disk_lines.push((child_str, child_dir));
+                }
+                if child_dir && !ft.is_symlink() {
+                    stack.push(p);
+                }
+            }
+        }
+    }
+
+    if disk_lines.is_empty() {
+        return;
+    }
+    disk_append(&disk_lines);
+    if let Ok(mut slot) = index_slot().lock() {
+        *slot = Some(Arc::new(IndexData { entries }));
+    }
+}
+
+/// 从索引移除一条路径；若为目录则连同所有子项（路径前缀匹配）一起移除。
+/// 仅更新内存（磁盘残留项由 search 的 metadata 校验过滤）。
+pub fn remove_path(path: &Path) {
+    let guard = match index_slot().lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    let Some(data) = guard.clone() else {
+        return;
+    };
+    drop(guard);
+
+    let target = norm_path(path);
+    let target_prefix = {
+        let mut s = target.clone();
+        if !s.ends_with('\\') {
+            s.push('\\');
+        }
+        s
+    };
+    // 路径相等，或以 "target\" 为前缀（子项）均移除
+    let entries: Vec<IndexEntry> = data
+        .entries
+        .iter()
+        .filter(|e| {
+            !e.path.eq_ignore_ascii_case(&target)
+                && !e.path.to_lowercase().starts_with(&target_prefix.to_lowercase())
+        })
+        .cloned()
+        .collect();
+
+    if entries.len() == data.entries.len() {
+        return; // 无变化
+    }
+    if let Ok(mut slot) = index_slot().lock() {
+        *slot = Some(Arc::new(IndexData { entries }));
+    }
+}
+
+/// 重命名：移除旧路径（含子项），加入新路径（含子树）。
+pub fn rename_path(old: &Path, new: &Path) {
+    remove_path(old);
+    add_path(new);
 }
 
 #[cfg(test)]

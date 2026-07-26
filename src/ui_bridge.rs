@@ -253,11 +253,20 @@ pub fn push_entries(ui: &MainWindow, core: &AppCore) {
         spawn_thumbnails(ui, jobs, generation, ThumbSide::Left);
     }
 
-    // 面包屑与标题：虚拟路径使用友好名称
+    // 面包屑与标题：设置页固定显示「设置」（地址 setting）；虚拟路径使用友好名称
     let cur = tab.history.current();
     let cur_str = cur.to_string_lossy().to_string();
-    state.set_current_vpath(cur_str.clone().into());
-    if crate::fs::virtualfs::is_virtual(&cur_str) {
+    if tab.kind == TabKind::Settings {
+        state.set_current_vpath("setting".into());
+        let crumbs = vec![Crumb {
+            name: "设置".into(),
+            path: "setting".into(),
+        }];
+        state.set_crumbs(ModelRc::new(VecModel::from(crumbs)));
+        state.set_current_title("设置".into());
+        state.set_current_subtitle("应用设置".into());
+    } else if crate::fs::virtualfs::is_virtual(&cur_str) {
+        state.set_current_vpath(cur_str.clone().into());
         let title = crate::fs::virtualfs::friendly_title(&cur_str);
         let crumbs = vec![Crumb {
             name: title.clone().into(),
@@ -268,6 +277,7 @@ pub fn push_entries(ui: &MainWindow, core: &AppCore) {
         let subtitle = format!("{} 个项目", tab.entries.len());
         state.set_current_subtitle(subtitle.into());
     } else {
+        state.set_current_vpath(cur_str.clone().into());
         let crumbs = build_crumbs(cur);
         state.set_crumbs(ModelRc::new(VecModel::from(crumbs)));
 
@@ -1528,6 +1538,12 @@ pub fn fill_quicklook(ui: &MainWindow, core: &AppCore, right: bool) -> bool {
             state.set_ql_img_w(0);
             state.set_ql_img_h(0);
             state.set_ql_subtitle(size_text.into());
+        }
+        PreviewKind::Archive => {
+            // 归档：列出压缩包内文件清单（复用文本面板，ql-kind 经 code() 映射为 2）
+            state.set_ql_subtitle(size_text.into());
+            let listing = preview::archive_listing(path);
+            state.set_ql_text(listing.into());
         }
         PreviewKind::Folder => {
             let (dirs, files, fsize) = preview::folder_summary(path);

@@ -185,7 +185,29 @@ export component InputOverlay inherits TouchArea {
                 // 注意：行内重命名进行中本层已被禁用（见 enabled），点击不会到达这里；
                 // 退出编辑由 Enter/Escape、面板切换（set-active-pane）或目录刷新驱动。
                 if (root.press-idx >= 0) {
-                    root.do-select(root.press-idx, ev.modifiers.control);
+                    // 取命中条目（用 press-idx，避免 mouse-up 时坐标已偏移到相邻行）
+                    let is-dir = root.pane == "left"
+                        ? AppState.entries[root.press-idx].is-dir
+                        : AppState.r-entries[root.press-idx].is-dir;
+                    let already-selected = root.pane == "left"
+                        ? AppState.entries[root.press-idx].selected
+                        : AppState.r-entries[root.press-idx].selected;
+                    let plain = !ev.modifiers.control && !ev.modifiers.shift && !root.press-ctrl && !root.press-shift;
+                    if (AppState.set-single-click && plain && is-dir) {
+                        // 「单击打开文件夹」：单击目录直接进入（等同双击）
+                        root.do-open(root.press-idx);
+                    } else if (AppState.set-click-rename && !AppState.set-single-click
+                               && plain && already-selected) {
+                        // 「选中后单击重命名」：单击「已选中」的单个项进入行内重命名
+                        root.do-select(root.press-idx, false);
+                        if (root.pane == "left") {
+                            AppState.editing-index = root.press-idx;
+                        } else {
+                            AppState.r-editing-index = root.press-idx;
+                        }
+                    } else {
+                        root.do-select(root.press-idx, ev.modifiers.control);
+                    }
                 } else {
                     root.do-clear();
                 }

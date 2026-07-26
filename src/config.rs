@@ -151,6 +151,10 @@ pub struct Settings {
     pub startup_open: String,
     #[serde(default = "d_true")]
     pub single_click_open: bool,
+    /// 选中后单击重命名：未开启「单击打开文件夹」时，单击已选中的单个项进入行内重命名。
+    /// 开启「单击打开文件夹」后本项在设置页置灰不可改（单击已被「进入文件夹」占用）。
+    #[serde(default = "d_true")]
+    pub click_to_rename: bool,
     /// 将本应用设为默认文件管理器（HKCU 注册表接管文件夹打开与 Win+E）
     #[serde(default)]
     pub default_file_manager: bool,
@@ -240,6 +244,7 @@ impl Default for Settings {
             launch_on_startup: false,
             startup_open: d_startup_open(),
             single_click_open: true,
+            click_to_rename: true,
             default_file_manager: false,
             language: d_language(),
             theme_mode: d_theme_mode(),

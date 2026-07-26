@@ -82,7 +82,8 @@ pub fn open_with_dialog(path: &str, hwnd_isize: isize) -> bool {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::Shell::{
-        SHOpenWithDialog, OAIF_ALLOW_REGISTRATION, OAIF_EXEC, OPENASINFO,
+        SHChangeNotify, SHOpenWithDialog, OAIF_ALLOW_REGISTRATION, OAIF_EXEC, OPENASINFO,
+        SHCNE_ASSOCCHANGED, SHCNF_IDLIST,
     };
 
     let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
@@ -94,7 +95,11 @@ pub fn open_with_dialog(path: &str, hwnd_isize: isize) -> bool {
             oaifInFlags: OAIF_ALLOW_REGISTRATION | OAIF_EXEC,
         };
         let hwnd = HWND(hwnd_isize as *mut core::ffi::c_void);
-        SHOpenWithDialog(Some(hwnd), &info).is_ok()
+        let ok = SHOpenWithDialog(Some(hwnd), &info).is_ok();
+        // 关联已变更：广播 SHCNE_ASSOCCHANGED 通知 Shell 刷新图标缓存，
+        // 否则随后立即重提取仍可能取到旧的关联图标（需重开文件夹才更新的根因）。
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
+        ok
     }
 }
 

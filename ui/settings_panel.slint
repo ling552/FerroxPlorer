@@ -43,11 +43,16 @@ component SettingsNavItem inherits Rectangle {
 // ── 开关（受控：自身不翻转，点击发出目标值，由状态回流驱动）──
 component Switch inherits Rectangle {
     in property <bool> checked: false;
+    in property <bool> disabled: false;
     callback toggled(bool);
     width: 44px;
     height: 24px;
     border-radius: 12px;
-    background: checked ? Theme.primary : (Theme.dark ? #3a4658 : #c7d4e1);
+    // 禁用时置灰，不可交互（用于「选中后单击重命名」在单击打开模式下变灰）
+    background: root.disabled
+        ? (Theme.dark ? #2c3645 : #d4dde6)
+        : (checked ? Theme.primary : (Theme.dark ? #3a4658 : #c7d4e1));
+    opacity: root.disabled ? 0.6 : 1.0;
     animate background { duration: 150ms; easing: ease; }
     Rectangle {
         x: checked ? parent.width - 21px : 3px;
@@ -60,8 +65,8 @@ component Switch inherits Rectangle {
         animate x { duration: 150ms; easing: ease-out; }
     }
     TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.toggled(!root.checked); }
+        mouse-cursor: root.disabled ? not-allowed : pointer;
+        clicked => { if (!root.disabled) { root.toggled(!root.checked); } }
     }
 }
 
@@ -494,6 +499,16 @@ export component SettingsPanel inherits Rectangle {
                                 VerticalLayout { alignment: center; Switch {
                                     checked: AppState.set-single-click;
                                     toggled(v) => { AppState.set-bool("single-click", v); }
+                                } }
+                            }
+                            SettingRow {
+                                name: "选中后单击重命名";
+                                desc: "未开启「单击打开文件夹」时，单击已选中的单个文件或文件夹进入重命名。开启单击打开后本项不可用";
+                                VerticalLayout { alignment: center; Switch {
+                                    checked: AppState.set-click-rename;
+                                    // 「单击打开文件夹」开启时置灰不可改（单击已被进入文件夹占用）
+                                    disabled: AppState.set-single-click;
+                                    toggled(v) => { AppState.set-bool("click-rename", v); }
                                 } }
                             }
                             SettingRow {

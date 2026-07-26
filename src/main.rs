@@ -1283,6 +1283,13 @@ fn start_next_job(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     let w_done = ui.as_weak();
     let w_ask = ui.as_weak();
     let bridge = core.borrow().conflict_bridge.clone();
+    // 克隆任务信息供完成回调更新文件名索引（job 本体会被移入工作线程）
+    let job_kind = job.kind;
+    let job_srcs = job.srcs.clone();
+    let job_dst = job.dst.clone();
+    // 后台索引开关在启动时读取并捕获（Rc 非 Send，不能进事件循环闭包）；
+    // 任务期间用户改设置属极小概率，偏差由下次全量重建修正。
+    let bg_index = core.borrow().config.settings.background_index;
     std::thread::spawn(move || {
         let result = fs::tasks::run(
             job,
@@ -1343,6 +1350,19 @@ fn start_next_job(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                 } else {
                     format!("操作部分失败：{}", result.error)
                 };
+                // 启用后台索引时按任务类型增量更新：复制->加入新项；移动->重命名（旧路径移除、新路径加入）。
+                // 冲突重命名（" (2)"）的项索引会略有偏差，由 search 的 metadata 校验兜底，待下次全量重建修正。
+                if bg_index && !result.cancelled {
+                    for src in &job_srcs {
+                        let Some(name) = src.file_name() else { continue };
+                        let dest = job_dst.join(name);
+                        match job_kind {
+                            fs::tasks::TaskKind::Copy => fs::index::add_path(&dest),
+                            fs::tasks::TaskKind::Move => fs::index::rename_path(src, &dest),
+                            _ => {}
+                        }
+                    }
+                }
                 ui.global::<AppState>()
                     .invoke_task_finished(result.ok, msg.into());
             }
@@ -1406,8 +1426,12 @@ fn rename_in_pane(
                 Ok(new_path) => {
                     c.borrow_mut().record_undo(app::UndoAction::Rename {
                         orig: old.clone(),
-                        renamed: new_path,
+                        renamed: new_path.clone(),
                     });
+                    // 启用后台索引时同步重命名（移除旧路径含子项、加入新路径）
+                    if c.borrow().config.settings.background_index {
+                        fs::index::rename_path(&old, &new_path);
+                    }
                 }
                 Err(error) => {
                     let args = vec![old.as_os_str().to_os_string(), new_name.into()];
@@ -2486,10 +2510,34 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             // 移入回收站（可还原），与资源管理器一致
             let msg = match fs::recyclebin::move_to_recycle_bin(&paths) {
                 Ok(_) => {
-                    c.borrow_mut().record_undo(app::UndoAction::Delete {
-                        paths: paths.clone(),
-                    });
-                    format!("已将 {} 个项目移入回收站", n)
+                    // SHFileOperation 偶尔对受保护文件返回成功但实际未删除（静默失败）：
+                    // 若仍有目标存在，按权限失败处理，请求管理员提权（提权回收失败会回退永久删除）
+                    if paths.iter().any(|p| p.exists()) {
+                        let args: Vec<std::ffi::OsString> = paths
+                            .iter()
+                            .map(|path| path.as_os_str().to_os_string())
+                            .collect();
+                        if fs::elevated::retry_if_permission_denied(
+                            &std::io::Error::from_raw_os_error(5),
+                            fs::elevated::ElevatedOp::Recycle,
+                            &args,
+                        ) {
+                            "已请求管理员权限，操作完成后将自动刷新".to_string()
+                        } else {
+                            format!("删除失败：部分项目无法删除")
+                        }
+                    } else {
+                        c.borrow_mut().record_undo(app::UndoAction::Delete {
+                            paths: paths.clone(),
+                        });
+                        // 启用后台索引时从索引移除被删项（含目录子项）
+                        if c.borrow().config.settings.background_index {
+                            for p in &paths {
+                                fs::index::remove_path(p);
+                            }
+                        }
+                        format!("已将 {} 个项目移入回收站", n)
+                    }
                 }
                 Err(e) => {
                     let args: Vec<std::ffi::OsString> = paths
@@ -2540,7 +2588,13 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             let right = toolbar_routes_right(&ui);
             let dst = c.borrow().pane(right).history.current().clone();
             match ops::new_folder(&dst, "新建文件夹") {
-                Ok(path) => c.borrow_mut().record_undo(app::UndoAction::Create { path }),
+                Ok(path) => {
+                    c.borrow_mut().record_undo(app::UndoAction::Create { path: path.clone() });
+                    // 启用后台索引时增量加入，使深层搜索立即可见
+                    if c.borrow().config.settings.background_index {
+                        fs::index::add_path(&path);
+                    }
+                }
                 Err(error) => {
                     let args = vec![dst.as_os_str().to_os_string(), "新建文件夹".into()];
                     let elevated = fs::elevated::retry_if_permission_denied(
@@ -2571,7 +2625,12 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             let right = toolbar_routes_right(&ui);
             let dst = c.borrow().pane(right).history.current().clone();
             match ops::new_file(&dst, "新建文本文档.txt") {
-                Ok(path) => c.borrow_mut().record_undo(app::UndoAction::Create { path }),
+                Ok(path) => {
+                    c.borrow_mut().record_undo(app::UndoAction::Create { path: path.clone() });
+                    if c.borrow().config.settings.background_index {
+                        fs::index::add_path(&path);
+                    }
+                }
                 Err(error) => {
                     let args = vec![
                         dst.as_os_str().to_os_string(),
@@ -2801,6 +2860,10 @@ fn bind_new_menu(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                 return;
             }
         };
+        // 启用后台索引时增量加入
+        if c.borrow().config.settings.background_index {
+            fs::index::add_path(&created);
+        }
         c.borrow_mut().record_undo(app::UndoAction::Create {
             path: created.clone(),
         });
@@ -3487,6 +3550,7 @@ fn push_settings(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     let st = ui.global::<AppState>();
     st.set_set_launch_startup(s.launch_on_startup);
     st.set_set_single_click(s.single_click_open);
+    st.set_set_click_rename(s.click_to_rename);
     st.set_set_language(lang_disp(&s.language).into());
     st.set_set_startup_open(startup_disp(&s.startup_open).into());
     st.set_set_default_fm(s.default_file_manager);
@@ -3542,6 +3606,7 @@ fn bind_settings(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                 match key.as_str() {
                     "launch-startup" => s.launch_on_startup = val,
                     "single-click" => s.single_click_open = val,
+                    "click-rename" => s.click_to_rename = val,
                     "default-fm" => s.default_file_manager = val,
                     "show-hidden" => {
                         s.show_hidden = val;
@@ -3582,6 +3647,7 @@ fn bind_settings(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                 "compact" => theme.set_compact(val),
                 "launch-startup" => st.set_set_launch_startup(val),
                 "single-click" => st.set_set_single_click(val),
+                "click-rename" => st.set_set_click_rename(val),
                 "default-fm" => {
                     // 应用/撤销注册表接管；失败时回滚开关并提示
                     match fs::default_app::set_default(val) {
@@ -3991,10 +4057,21 @@ fn bind_hash(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             };
             if let Some(path) = path {
                 show_open_with_dialog(&ui, &path);
-                // 旧关联图标全部失效；重载目录按新关联重新提取图标，
-                // 详情栏「打开方式」行也随 update_selection 一起刷新
+                // open_with_dialog 内部已广播 SHCNE_ASSOCCHANGED 通知 Shell 刷新关联图标。
+                // 立即清缓存+重载一次；再延迟补刷一次--Shell 处理关联广播有一定延迟，
+                // 首次重提取可能仍取到旧图标，延迟重载确保新图标实时显示（无需重开文件夹）。
                 fs::thumbnail::clear_all_caches();
                 reload_active_pane(&ui, &c);
+                let w2 = ui.as_weak();
+                let c2 = c.clone();
+                slint::Timer::single_shot(std::time::Duration::from_millis(450), move || {
+                    if let Some(ui) = w2.upgrade() {
+                        fs::thumbnail::clear_all_caches();
+                        reload_active_pane(&ui, &c2);
+                        // 详情栏「打开方式」程序名也随之刷新
+                        ui_bridge::update_selection(&ui, &c2.borrow());
+                    }
+                });
             }
         }
     });

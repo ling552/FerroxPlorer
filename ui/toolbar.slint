@@ -1,6 +1,5 @@
 import { Theme } from "theme.slint";
 import { AppState, Crumb } from "globals.slint";
-import { LineEdit } from "std-widgets.slint";
 
 // 圆角图标按钮（使用 Segoe MDL2 Assets 图标字体，避免几何符号在中文字体下显示为方框）
 component IconBtn inherits Rectangle {
@@ -172,10 +171,33 @@ export component Toolbar inherits Rectangle {
                 padding-left: 12px; padding-right: 8px;
                 spacing: 6px;
                 Text { text: "\u{E721}"; font-family: "Segoe MDL2 Assets"; font-size: 15px; color: Theme.muted; vertical-alignment: center; }
-                search-edit := LineEdit {
-                    placeholder-text: "搜索当前目录…";
+                search-edit := TextInput {
                     text: AppState.search-text;
-                    edited(t) => { AppState.do-search(t); }
+                    font-size: 14px;
+                    color: Theme.text;
+                    single-line: true;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    edited => { AppState.do-search(self.text); }
+                    // 搜索框聚焦时会吞掉空格/Esc，全局快捷键到不了 FocusScope。
+                    // 在此显式处理：预览打开时空格/Esc 关闭、其余按键吞掉避免改写搜索词；
+                    // 有选中项时空格触发 Quick Look（而非往搜索词里输入空格）。
+                    key-pressed(ev) => {
+                        if (AppState.quicklook-open) {
+                            if (ev.text == " " || ev.text == Key.Escape) { AppState.close-quicklook(); }
+                            return accept;
+                        }
+                        if (ev.text == " " && AppState.sel-count > 0) {
+                            AppState.open-quicklook();
+                            return accept;
+                        }
+                        if (ev.text == Key.Escape) {
+                            AppState.do-search("");
+                            AppState.set-omni-mode("path");
+                            return accept;
+                        }
+                        return reject;
+                    }
                 }
                 clear-touch := TouchArea {
                     width: 28px;

@@ -393,6 +393,8 @@ export global AppState {
     // ── 常规 ──
     in-out property <bool> set-launch-startup: false;
     in-out property <bool> set-single-click: true;
+    // 选中后单击重命名（开启「单击打开文件夹」后置灰不可改）
+    in-out property <bool> set-click-rename: true;
     // 将本应用设为默认文件管理器（注册表接管文件夹打开与 Win+E）
     in-out property <bool> set-default-fm: false;
     in-out property <string> set-language: "简体中文";

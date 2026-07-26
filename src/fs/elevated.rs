@@ -50,7 +50,12 @@ fn is_permission_error(error: &std::io::Error) -> bool {
     if error.kind() == std::io::ErrorKind::PermissionDenied {
         return true;
     }
-    matches!(error.raw_os_error(), Some(5) | Some(32) | Some(33) | Some(1314))
+    matches!(
+        error.raw_os_error(),
+        // ERROR_ACCESS_DENIED / ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION /
+        // ERROR_PRIVILEGE_NOT_HELD；DE_ACCESSDENIED(120) 为 SHFileOperation 的拒绝访问码
+        Some(5) | Some(32) | Some(33) | Some(120) | Some(1314)
+    )
 }
 
 /// 若当前进程是提权文件操作子进程，则执行操作并返回 true。
