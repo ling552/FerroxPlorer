@@ -12,6 +12,13 @@ export component QuickLook inherits Rectangle {
 
     background: AppState.ql-video-fullscreen ? black : transparent;
 
+    // 把秒数格式化为 mm:ss（秒不足两位补零）
+    pure function fmt-100ns(v: int) -> string {
+        let m: int = floor(v / 60);
+        let s: int = mod(v, 60);
+        return s < 10 ? m + ":0" + s : m + ":" + s;
+    }
+
     // 半透明遮罩：点击关闭；视频全屏时作为纯黑留边背景。
     Rectangle {
         background: AppState.ql-video-fullscreen ? black : #12223455;
@@ -238,24 +245,59 @@ export component QuickLook inherits Rectangle {
                     }
                 }
 
-                // 文本/代码预览（ql-kind == 2 源码模式）：单层等宽文本保证行高与字形稳定。
-                // Slint Text 不支持富文本，多层字符遮罩在混合中英文时会产生基线偏移。
+                // 文本/代码预览（ql-kind == 2 源码模式）：4 层等宽 Text 字符对齐叠加，
+                // 实现 Slint 不支持的多色语法高亮。base 层为正文（关键字等已挖空为空格），
+                // 其上叠加 关键字/字符串/注释 三层（同位同字体 Consolas，仅本类字符可见）。
+                // highlight.rs 保证四层逐字符对齐（含 CJK 全角空格占位），同位同字体无基线漂移。
                 if AppState.ql-kind == 2 && !AppState.ql-web-mode: ScrollView {
                     VerticalLayout {
                         padding: 16px;
-                        code-base := Text {
-                            text: AppState.ql-text;
-                            font-size: Theme.fs-small;
-                            font-family: "Consolas";
-                            color: Theme.text;
-                            horizontal-alignment: left;
-                            vertical-alignment: top;
+                        Rectangle {
+                            height: code-base.preferred-height;
+                            code-base := Text {
+                                x: 0; y: 0; width: parent.width;
+                                text: AppState.ql-text;
+                                font-size: Theme.fs-small;
+                                font-family: "Consolas";
+                                color: Theme.text;
+                                horizontal-alignment: left;
+                                vertical-alignment: top;
+                            }
+                            Text {
+                                x: 0; y: 0; width: parent.width;
+                                text: AppState.ql-code-kw;
+                                font-size: Theme.fs-small;
+                                font-family: "Consolas";
+                                color: Theme.dark ? #6aa9ff : #005fb0;
+                                horizontal-alignment: left;
+                                vertical-alignment: top;
+                            }
+                            Text {
+                                x: 0; y: 0; width: parent.width;
+                                text: AppState.ql-code-str;
+                                font-size: Theme.fs-small;
+                                font-family: "Consolas";
+                                color: Theme.dark ? #e0a06a : #b06a1f;
+                                horizontal-alignment: left;
+                                vertical-alignment: top;
+                            }
+                            Text {
+                                x: 0; y: 0; width: parent.width;
+                                text: AppState.ql-code-cmt;
+                                font-size: Theme.fs-small;
+                                font-family: "Consolas";
+                                color: Theme.muted;
+                                horizontal-alignment: left;
+                                vertical-alignment: top;
+                            }
                         }
                     }
                 }
 
                 // 视频预览（ql-kind == 4）：黑底衬托；画面由 Media Foundation
-                // 子窗口覆盖渲染（含音频），本层只作背景与启动提示
+                // 子窗口覆盖渲染（含音频），本层只作背景、启动提示与底部控制条。
+                // 控制条占据内容区底部 44px（与 Rust 侧 QL_VIDEO_CTRL_H 一致），
+                // 原生子窗口矩形已在其上方留白，故不会被原生画面遮挡。
                 if AppState.ql-kind == 4: Rectangle {
                     background: black;
                     Text {
@@ -264,6 +306,99 @@ export component QuickLook inherits Rectangle {
                         color: #9aa7b5;
                         horizontal-alignment: center;
                         vertical-alignment: center;
+                    }
+
+                    // 底部播放控制条：播放/暂停 + 当前时间 + 可拖动进度条 + 总时长
+                    controlbar := Rectangle {
+                        y: parent.height - 44px;
+                        width: parent.width;
+                        height: 44px;
+                        background: #000000a0;
+                        property <float> ratio: AppState.ql-video-duration > 0
+                            ? clamp(AppState.ql-video-position * 1.0 / AppState.ql-video-duration, 0.0, 1.0)
+                            : 0.0;
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 10px;
+                            alignment: center;
+                            // 播放 / 暂停按钮
+                            Rectangle {
+                                width: 28px; height: 28px;
+                                border-radius: 6px;
+                                background: playbtn.has-hover ? #ffffff22 : transparent;
+                                Text {
+                                    text: AppState.ql-video-paused ? "\u{E768}" : "\u{E769}";
+                                    font-family: "Segoe MDL2 Assets";
+                                    font-size: 13px;
+                                    color: white;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                playbtn := TouchArea { clicked => { AppState.ql-video-toggle-play(); } }
+                            }
+                            // 当前时间
+                            Text {
+                                text: root.fmt-100ns(AppState.ql-video-position);
+                                font-size: Theme.fs-tiny;
+                                color: #d8e0ea;
+                                vertical-alignment: center;
+                            }
+                            // 进度轨道：可点击 / 拖动跳转
+                            track := Rectangle {
+                                horizontal-stretch: 1;
+                                height: 18px;
+                                // 背景轨道
+                                Rectangle {
+                                    y: (parent.height - 4px) / 2;
+                                    width: parent.width;
+                                    height: 4px;
+                                    border-radius: 2px;
+                                    background: #ffffff33;
+                                }
+                                // 已播放填充
+                                Rectangle {
+                                    y: (parent.height - 4px) / 2;
+                                    width: parent.width * controlbar.ratio;
+                                    height: 4px;
+                                    border-radius: 2px;
+                                    background: Theme.primary;
+                                }
+                                // 拖动滑块
+                                Rectangle {
+                                    x: clamp(parent.width * controlbar.ratio - 6px, 0px, parent.width - 12px);
+                                    y: (parent.height - 12px) / 2;
+                                    width: 12px; height: 12px;
+                                    border-radius: 6px;
+                                    background: white;
+                                }
+                                track-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    property <bool> dragging: false;
+                                    pointer-event(ev) => {
+                                        if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
+                                            self.dragging = true;
+                                            AppState.ql-video-seek(self.mouse-x / track.width);
+                                        }
+                                        if (ev.kind == PointerEventKind.up) {
+                                            self.dragging = false;
+                                        }
+                                    }
+                                    moved => {
+                                        if (self.dragging) {
+                                            AppState.ql-video-seek(self.mouse-x / track.width);
+                                        }
+                                    }
+                                }
+                            }
+                            // 总时长
+                            Text {
+                                text: root.fmt-100ns(AppState.ql-video-duration);
+                                font-size: Theme.fs-tiny;
+                                color: #d8e0ea;
+                                vertical-alignment: center;
+                            }
+                        }
                     }
                 }
 

@@ -288,6 +288,15 @@ pub struct NetworkLocation {
     pub drive: Option<String>, // 挂载盘符（如 "Z:"）；未挂载为 None
 }
 
+/// 用户自定义标签定义。`id` 为唯一标识，对应的文件标签键为 `custom:<id>`，
+/// `color` 为十六进制颜色（如 "#ff6600"），`name` 为显示名。
+#[derive(Clone, Serialize, Deserialize)]
+pub struct CustomTag {
+    pub id: String,
+    pub name: String,
+    pub color: String,
+}
+
 /// 完整应用配置
 #[derive(Serialize, Deserialize, Default)]
 pub struct AppConfig {
@@ -296,12 +305,15 @@ pub struct AppConfig {
     /// 用户可调设置
     #[serde(default)]
     pub settings: Settings,
-    /// 绝对路径 -> 标签键集合（"important" / "archive" / "done"）
+    /// 绝对路径 -> 标签键集合（"important" / "archive" / "done" / "custom:<id>"）
     #[serde(default)]
     pub tags: BTreeMap<String, Vec<String>>,
     /// 用户保存的网络位置连接
     #[serde(default)]
     pub network_locations: Vec<NetworkLocation>,
+    /// 用户自定义标签定义（顺序即显示顺序：工具栏「标记」下拉与侧栏同步）
+    #[serde(default)]
+    pub custom_tags: Vec<CustomTag>,
 }
 
 /// 配置文件完整路径
@@ -375,5 +387,41 @@ impl AppConfig {
             .values()
             .filter(|tags| tags.iter().any(|t| t == tag))
             .count()
+    }
+
+    /// 自定义标签 id -> 文件标签键
+    pub fn custom_tag_key(id: &str) -> String {
+        format!("custom:{}", id)
+    }
+
+    /// 新增自定义标签，返回新建定义（id 用毫秒时间戳保证唯一）
+    pub fn add_custom_tag(&mut self, name: &str, color: &str) -> CustomTag {
+        let id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis().to_string())
+            .unwrap_or_else(|_| format!("{}", self.custom_tags.len()));
+        let tag = CustomTag {
+            id: id.clone(),
+            name: name.to_string(),
+            color: color.to_string(),
+        };
+        self.custom_tags.push(tag.clone());
+        tag
+    }
+
+    /// 删除自定义标签：移除定义并清理所有路径上对应的 custom:<id> 标签
+    pub fn remove_custom_tag(&mut self, id: &str) {
+        self.custom_tags.retain(|t| t.id != id);
+        let key = Self::custom_tag_key(id);
+        for list in self.tags.values_mut() {
+            list.retain(|t| t != &key);
+        }
+        self.tags.retain(|_, list| !list.is_empty());
+    }
+
+    /// 据文件标签键（custom:<id>）取自定义标签定义
+    pub fn custom_tag_by_key(&self, key: &str) -> Option<&CustomTag> {
+        let id = key.strip_prefix("custom:")?;
+        self.custom_tags.iter().find(|t| t.id == id)
     }
 }

@@ -197,7 +197,7 @@ pub fn load_cached_request(request: &IconRequest, size: u32) -> Option<Arc<IconP
         }
         Kind::Path(k) => {
             if let Ok(mut c) = path_cache().lock() {
-                if c.len() > 4096 {
+                if c.len() > 500 {
                     c.clear();
                 }
                 c.insert(k, arc.clone());

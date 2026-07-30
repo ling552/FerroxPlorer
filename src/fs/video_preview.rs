@@ -71,9 +71,38 @@ pub fn reposition(rect: (i32, i32, i32, i32)) {
 #[cfg(not(windows))]
 pub fn reposition(_rect: (i32, i32, i32, i32)) {}
 
+/// 暂停 / 播放切换，返回切换后是否处于暂停态（true=已暂停）。未在播放时为空操作。
+#[cfg(windows)]
+pub fn toggle_play() -> bool {
+    win_impl::toggle_play()
+}
+
+#[cfg(not(windows))]
+pub fn toggle_play() -> bool {
+    false
+}
+
+/// 当前播放位置与总时长（单位 100ns），未在播放返回 (0, 0)。
+/// 供 UI 线程轮询刷新进度条。
+#[cfg(windows)]
+pub fn position() -> (i64, i64) {
+    win_impl::position()
+}
+
+#[cfg(not(windows))]
+pub fn position() -> (i64, i64) {
+    (0, 0)
+}
+
+/// 跳转到指定 100ns 位置（未在播放时为空操作）。
+pub fn seek_100ns(pos: i64) {
+    #[cfg(windows)]
+    win_impl::seek_100ns(pos);
+}
+
 #[cfg(windows)]
 mod win_impl {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::sync::atomic::{AtomicU64, Ordering};
     use windows::core::{implement, PCWSTR};
     use windows::Win32::Foundation::{HWND, SIZE};
@@ -81,8 +110,9 @@ mod win_impl {
         IMFPMediaPlayer, IMFPMediaPlayerCallback, IMFPMediaPlayerCallback_Impl,
         MFPCreateMediaPlayer, MFP_EVENT_HEADER, MFP_EVENT_TYPE_MEDIAITEM_CREATED,
         MFP_EVENT_TYPE_MEDIAITEM_SET, MFP_MEDIAITEM_CREATED_EVENT, MFP_MEDIAITEM_SET_EVENT,
-        MFP_OPTION_NONE,
+        MFP_OPTION_NONE, MFP_POSITIONTYPE_100NS,
     };
+    use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DestroyWindow, MoveWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WS_CHILD,
         WS_CLIPSIBLINGS, WS_VISIBLE,
@@ -94,6 +124,8 @@ mod win_impl {
     thread_local! {
         // (播放器, 子窗口句柄)：仅 UI 线程访问
         static ACTIVE: RefCell<Option<(IMFPMediaPlayer, isize)>> = const { RefCell::new(None) };
+        // 暂停态（仅 UI 线程）：start 时复位为 false，toggle_play 翻转并据此调 Pause/Play
+        static PAUSED: Cell<bool> = const { Cell::new(false) };
     }
 
     /// 播放代次：每次 start/stop 自增。异步事件携带发起时代次（dwUserData），
@@ -179,6 +211,8 @@ mod win_impl {
     ) -> bool {
         // 先停掉上一次播放（切换视频/重复打开）
         stop();
+        // 新播放从播放态开始（PAUSED 复位）
+        PAUSED.with(|p| p.set(false));
         let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
 
         let class: Vec<u16> = "STATIC".encode_utf16().chain(std::iter::once(0)).collect();
@@ -267,6 +301,74 @@ mod win_impl {
                 }
             }
         });
+    }
+
+    /// 暂停 / 播放切换，返回切换后是否处于暂停态（true=已暂停）
+    pub fn toggle_play() -> bool {
+        ACTIVE.with(|a| {
+            if let Some((player, _)) = a.borrow().as_ref() {
+                let new_paused = !PAUSED.with(|p| p.get());
+                unsafe {
+                    if new_paused {
+                        let _ = player.Pause();
+                    } else {
+                        let _ = player.Play();
+                    }
+                }
+                PAUSED.with(|p| p.set(new_paused));
+                new_paused
+            } else {
+                false
+            }
+        })
+    }
+
+    /// 当前播放位置与总时长（单位 100ns），未在播放返回 (0, 0)
+    pub fn position() -> (i64, i64) {
+        ACTIVE.with(|a| {
+            if let Some((player, _)) = a.borrow().as_ref() {
+                unsafe {
+                    let cur = player
+                        .GetPosition(&MFP_POSITIONTYPE_100NS)
+                        .ok()
+                        .map(|pv| pv_i64(&pv))
+                        .unwrap_or(0);
+                    let dur = player
+                        .GetDuration(&MFP_POSITIONTYPE_100NS)
+                        .ok()
+                        .map(|pv| pv_i64(&pv))
+                        .unwrap_or(0);
+                    (cur, dur)
+                }
+            } else {
+                (0, 0)
+            }
+        })
+    }
+
+    /// 跳转到指定 100ns 位置
+    pub fn seek_100ns(pos: i64) {
+        ACTIVE.with(|a| {
+            if let Some((player, _)) = a.borrow().as_ref() {
+                unsafe {
+                    let mut pv = PROPVARIANT::default();
+                    set_pv_i8(&mut pv, pos);
+                    let _ = player.SetPosition(&MFP_POSITIONTYPE_100NS, &pv);
+                }
+            }
+        });
+    }
+
+    /// 从 PROPVARIANT 偏移 8 字节处读 i64（VT_I8/VT_UI8 的值；vt 在偏移 0）
+    unsafe fn pv_i64(pv: &PROPVARIANT) -> i64 {
+        *((pv as *const PROPVARIANT as *const u8).add(8) as *const i64)
+    }
+
+    /// 构造 VT_I8 的 PROPVARIANT（vt=20 写偏移 0，值写偏移 8）
+    unsafe fn set_pv_i8(pv: &mut PROPVARIANT, val: i64) {
+        let p = pv as *mut PROPVARIANT as *mut u8;
+        *(p as *mut u16) = 20; // VT_I8
+        *((p.add(8)) as *mut i64) = val;
     }
 }
 

@@ -16,6 +16,8 @@ export struct FileEntry {
     tag-important: bool,
     tag-archive: bool,
     tag-done: bool,
+    // 该条目所含自定义标签的颜色列表，用于渲染额外彩色圆点
+    custom-tag-colors: [brush],
     // Git 状态徽章标识：""=无 / "M"=已修改 / "?"=未追踪 / "A"=已暂存 / "!"=冲突
     git-status: string,
     // 缩略图/系统图标（异步加载后由 Rust 回填）
@@ -109,6 +111,13 @@ export struct NetAccount {
     name: string,    // 显示名
     server: string,  // 服务器地址（\\server\share）
     drive: string,   // 已挂载盘符（如 "Z:"，未挂载为空串）
+}
+
+// 用户自定义标签定义（工具栏「标记」下拉与侧栏同步显示）
+export struct CustomTagDef {
+    id: string,       // 唯一标识（对应文件标签键 custom:<id>）
+    name: string,     // 显示名
+    color: brush,     // 标签颜色
 }
 
 export global AppState {
@@ -317,6 +326,14 @@ export global AppState {
     // 视频预览无边框显示器全屏；Esc 优先退出全屏，再关闭预览。
     in-out property <bool> ql-video-fullscreen: false;
     callback ql-toggle-video-fullscreen();
+    // 视频播放进度（100ns）与暂停态，供进度条显示与轮询刷新
+    in-out property <int> ql-video-position: 0;
+    in-out property <int> ql-video-duration: 0;
+    in-out property <bool> ql-video-paused: false;
+    // 跳转到 0.0..1.0 比例位置（由进度条拖动/点击触发）
+    callback ql-video-seek(float);
+    // 播放 / 暂停切换
+    callback ql-video-toggle-play();
     // 切换渲染/源码视图（Rust 端启停 WebView2 子窗口并重算卡片尺寸）
     callback ql-set-web-mode(bool);
     // 打开当前选中项的 Quick Look 预览（由空格键触发）
@@ -349,6 +366,18 @@ export global AppState {
     in-out property <bool> sel-tag-important: false;
     in-out property <bool> sel-tag-archive: false;
     in-out property <bool> sel-tag-done: false;
+    // ── 自定义标签 ──
+    // 自定义标签定义（启动与增删时由 Rust 推送；顺序即「标记」下拉与侧栏的显示顺序）
+    in-out property <[CustomTagDef]> custom-tags;
+    // 当前选中项所含的自定义标签（与 custom-tags 同序的布尔数组，供「标记」下拉显示对勾：
+    // 第 i 项为真表示选中项全部含第 i 个自定义标签）
+    in-out property <[bool]> sel-custom-tag-bools;
+    // 「添加标签」对话框：名称 + 颜色色板选择
+    in-out property <bool> tag-dialog-open: false;
+    in-out property <string> tag-dialog-name;
+    in-out property <string> tag-dialog-color: "#0078d4";
+    callback add-custom-tag(string, string);  // (名称, 颜色) -> 新建并持久化
+    callback remove-custom-tag(string);        // (id) -> 删除定义并清理文件上的该标签
     // 回收站：还原某条目（filtered 下标）到原位置
     callback restore-item(int);
 

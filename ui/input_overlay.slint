@@ -103,6 +103,11 @@ export component InputOverlay inherits TouchArea {
     }
 
     double-clicked => {
+        // 双击打开优先于「二次单击重命名」：先取消刚进入的重命名态再打开。
+        // 文件经外部程序打开不经 load_current，不会自动清除 editing-index，
+        // 若不在此显式复位，双击已选中文件会残留重命名输入框。
+        AppState.editing-index = -1;
+        AppState.r-editing-index = -1;
         if (root.hit-idx(self.mouse-x, self.mouse-y) >= 0) {
             root.do-open(root.hit-idx(self.mouse-x, self.mouse-y));
         }
@@ -215,9 +220,9 @@ export component InputOverlay inherits TouchArea {
                         // 「单击打开文件夹」：单击目录直接进入（等同双击）
                         root.do-open(root.press-idx);
                     } else if (AppState.set-click-rename && !AppState.set-single-click
-                               && plain && already-selected && !is-dir) {
-                        // 「选中后单击重命名」：单击「已选中」的单个项进入行内重命名
-                        // 注意：文件夹跳过此逻辑，避免双击打开文件夹时误触发重命名
+                               && plain && already-selected) {
+                        // 「选中后单击重命名」：单击「已选中」的单个项（文件或文件夹）进入行内重命名。
+                        // 文件夹亦支持：双击打开由 double-clicked 回调取消重命名后接管，不冲突。
                         root.do-select(root.press-idx, false);
                         if (root.pane == "left") {
                             AppState.rename-text = AppState.entries[root.press-idx].name;

@@ -3,7 +3,8 @@
 use crate::app::{AppCore, TabKind};
 use crate::fs::{disk, metadata};
 use crate::{
-    AclAce, AppState, CertInfo, Crumb, FileEntry, MainWindow, MetaRow, NavItem, NetAccount, TabInfo,
+    AclAce, AppState, CertInfo, Crumb, CustomTagDef, FileEntry, MainWindow, MetaRow, NavItem,
+    NetAccount, TabInfo,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel,
@@ -156,6 +157,33 @@ fn disk_fields(
 type IconJob = (usize, crate::fs::thumbnail::IconRequest);
 
 /// 把当前目录条目推送到 UI（entries / crumbs / 标题 / 状态栏）
+/// 解析 "#rrggbb" / "#aarrggbb" 为 Slint Color
+fn hex_to_color(hex: &str) -> slint::Color {
+    let h = hex.trim_start_matches('#');
+    let parse = |s: &str| u8::from_str_radix(s, 16).unwrap_or(0);
+    match h.len() {
+        6 => slint::Color::from_rgb_u8(parse(&h[0..2]), parse(&h[2..4]), parse(&h[4..6])),
+        8 => slint::Color::from_argb_u8(
+            parse(&h[0..2]),
+            parse(&h[2..4]),
+            parse(&h[4..6]),
+            parse(&h[6..8]),
+        ),
+        _ => slint::Color::from_rgb_u8(0, 120, 212),
+    }
+}
+
+/// 某路径所含自定义标签的颜色列表（按 custom_tags 定义顺序），用于渲染额外彩色圆点
+fn custom_tag_colors(config: &crate::config::AppConfig, path: &str) -> ModelRc<slint::Brush> {
+    let colors: Vec<slint::Brush> = config
+        .custom_tags
+        .iter()
+        .filter(|t| config.has_tag(path, &crate::config::AppConfig::custom_tag_key(&t.id)))
+        .map(|t| slint::Brush::SolidColor(hex_to_color(&t.color)))
+        .collect();
+    ModelRc::new(VecModel::from(colors))
+}
+
 pub fn push_entries(ui: &MainWindow, core: &AppCore) {
     let state = ui.global::<AppState>();
     let tab = core.active_tab();
@@ -221,6 +249,7 @@ pub fn push_entries(ui: &MainWindow, core: &AppCore) {
                 tag_important: core.config.has_tag(&e.path, "important"),
                 tag_archive: core.config.has_tag(&e.path, "archive"),
                 tag_done: core.config.has_tag(&e.path, "done"),
+                custom_tag_colors: custom_tag_colors(&core.config, &e.path),
                 // Git 徽章由后台线程计算完成后回填（见 spawn_git_status）
                 git_status: SharedString::new(),
                 thumb,
@@ -468,6 +497,7 @@ pub fn push_right(ui: &MainWindow, core: &AppCore) {
                 tag_important: core.config.has_tag(&e.path, "important"),
                 tag_archive: core.config.has_tag(&e.path, "archive"),
                 tag_done: core.config.has_tag(&e.path, "done"),
+                custom_tag_colors: custom_tag_colors(&core.config, &e.path),
                 // 右面板暂不展示 Git 徽章
                 git_status: SharedString::new(),
                 thumb,
@@ -646,6 +676,14 @@ pub fn update_selection_pane(ui: &MainWindow, core: &AppCore, right: bool) {
     state.set_sel_tag_important(all_tag("important"));
     state.set_sel_tag_archive(all_tag("archive"));
     state.set_sel_tag_done(all_tag("done"));
+    // 自定义标签对勾：按 custom_tags 顺序，每项表示选中项是否「全部」含该标签
+    let custom_bools: Vec<bool> = core
+        .config
+        .custom_tags
+        .iter()
+        .map(|t| all_tag(&crate::config::AppConfig::custom_tag_key(&t.id)))
+        .collect();
+    state.set_sel_custom_tag_bools(ModelRc::new(VecModel::from(custom_bools)));
 
     if sel_idx.len() == 1 {
         if let Some(e) = tab.entry_at(sel_idx[0]) {
@@ -1025,6 +1063,34 @@ pub fn build_sidebar(
                 has_thumb: false,
             });
         }
+        // 自定义标签（顺序与工具栏「标记」下拉一致，显示于固定标签之下）
+        for ct in &config.custom_tags {
+            let key = crate::config::AppConfig::custom_tag_key(&ct.id);
+            let vpath = format!("tag://{}", key);
+            let cnt = config.count(&key);
+            let badge = if cnt > 0 {
+                cnt.to_string()
+            } else {
+                String::new()
+            };
+            items.push(NavItem {
+                label: ct.name.clone().into(),
+                path: vpath.clone().into(),
+                icon: "●".into(),
+                icon_class: "".into(),
+                badge: badge.into(),
+                is_header: false,
+                is_disk: false,
+                disk_ratio: 0.0,
+                disk_info: "".into(),
+                disk_color: slint::Brush::SolidColor(hex_to_color(&ct.color)),
+                active: active_str == vpath,
+                collapsed: false,
+                is_tree: false,
+                thumb: Image::default(),
+                has_thumb: false,
+            });
+        }
     }
 
     // 系统（回收站 / 网络位置，均为虚拟路径，应用内浏览）
@@ -1085,6 +1151,22 @@ pub fn push_network_locations(ui: &MainWindow, core: &AppCore) {
         .collect();
     ui.global::<AppState>()
         .set_net_locations(ModelRc::new(VecModel::from(items)));
+}
+
+/// 推送自定义标签定义到 UI（启动与增删后调用，「标记」下拉与侧栏据此同步显示）
+pub fn push_custom_tags(ui: &MainWindow, core: &AppCore) {
+    let items: Vec<CustomTagDef> = core
+        .config
+        .custom_tags
+        .iter()
+        .map(|t| CustomTagDef {
+            id: t.id.clone().into(),
+            name: t.name.clone().into(),
+            color: slint::Brush::SolidColor(hex_to_color(&t.color)),
+        })
+        .collect();
+    ui.global::<AppState>()
+        .set_custom_tags(ModelRc::new(VecModel::from(items)));
 }
 
 /// 供哈希回调返回 SharedString
@@ -1376,6 +1458,9 @@ const QL_IMAGE_SIZE: u32 = 1600;
 /// 视频/网页原生子窗口矩形换算（main.rs quicklook_content_rect_phys）共用
 pub const QL_HEADER_H: f32 = 64.0;
 pub const QL_FOOTER_H: f32 = 38.0;
+/// 视频预览底部播放控制条高度（逻辑像素）：进度条占据内容区底部，
+/// 视频原生子窗口矩形据此下沿留白，避免原生窗口遮挡 Slint 控件。
+pub const QL_VIDEO_CTRL_H: f32 = 44.0;
 
 /// 按内容类型计算并应用预览卡片尺寸（逻辑像素）。
 /// `kind_code` 与 PreviewKind::code 一致；`iw`/`ih` 为图片或视频原生分辨率
@@ -1393,13 +1478,12 @@ pub fn apply_ql_card_size(ui: &MainWindow, kind_code: i32, iw: i32, ih: i32, web
     let max_cw = (win_w - 96.0).clamp(256.0, 1200.0);
     let max_ch = (win_h - 96.0 - chrome).clamp(256.0, 900.0);
     let (cw, ch) = match kind_code {
-        // 图片/视频：按原生分辨率适应（放不下等比缩小，小图 1:1，最小 256）
-        1 | 4 => {
+        // 图片：按原生分辨率适应（放不下等比缩小，小图 1:1，最小 256）
+        1 => {
             if iw > 0 && ih > 0 {
                 let fit = (max_cw / iw as f32).min(max_ch / ih as f32).min(1.0);
                 let mut width = iw as f32 * fit;
                 let mut height = ih as f32 * fit;
-                // 小视频可适度等比放大，但绝不分别钳制宽高，否则竖屏会被压扁。
                 if width < 256.0 && height < 256.0 {
                     let grow = (256.0 / width.max(height))
                         .min(max_cw / width)
@@ -1409,8 +1493,29 @@ pub fn apply_ql_card_size(ui: &MainWindow, kind_code: i32, iw: i32, ih: i32, web
                 }
                 (width.max(1.0), height.max(1.0))
             } else {
-                // 视频分辨率未知（异步加载中）：先按 16:9 常规尺寸，就绪后再调整
                 (704.0_f32.min(max_cw), 396.0_f32.min(max_ch))
+            }
+        }
+        // 视频：底部预留控制条高度，视频在剩余区域按宽高比适应；内容区=视频+控制条
+        4 => {
+            let video_max_ch = (max_ch - QL_VIDEO_CTRL_H).max(120.0);
+            if iw > 0 && ih > 0 {
+                let fit = (max_cw / iw as f32)
+                    .min(video_max_ch / ih as f32)
+                    .min(1.0);
+                let mut width = iw as f32 * fit;
+                let mut height = ih as f32 * fit;
+                if width < 256.0 && height < 256.0 {
+                    let grow = (256.0 / width.max(height))
+                        .min(max_cw / width)
+                        .min(video_max_ch / height);
+                    width *= grow;
+                    height *= grow;
+                }
+                (width.max(1.0), height.max(1.0) + QL_VIDEO_CTRL_H)
+            } else {
+                // 视频分辨率未知（异步加载中）：先按 16:9 + 控制条，就绪后再调整
+                (704.0_f32.min(max_cw), 396.0_f32.min(video_max_ch) + QL_VIDEO_CTRL_H)
             }
         }
         // 文本/代码：渲染视图更大，源码视图中等
@@ -1524,12 +1629,16 @@ pub fn fill_quicklook(ui: &MainWindow, core: &AppCore, right: bool) -> bool {
                 state.set_ql_can_render(true);
                 state.set_ql_web_mode(true);
             }
-            // 读取首部 64KB 文本，整段填入单层文本。
-            // 注意：不能再走 highlight 分层——quick_look.slint 已改为单层 Text
-            // 渲染（多层字符遮罩在混合中英文时基线漂移），若仍把关键字/字符串/
-            // 注释挖空到未渲染的图层，就会出现「预览缺字」（字符串全部消失）。
+            // 读取首部 64KB 文本，按扩展名做语法高亮分层（4 层字符对齐）。
+            // quick_look.slint 用同一等宽字体把 base / 关键字 / 字符串 / 注释 4 层 Text
+            // 原位叠加显示多色代码；base 层已把关键字等挖空为占位空格，叠加时互不遮盖。
             let text = preview::read_text_head(path, 64 * 1024);
-            state.set_ql_text(text.into());
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let layers = crate::fs::highlight::highlight(&text, ext);
+            state.set_ql_text(layers.base.into());
+            state.set_ql_code_kw(layers.keywords.into());
+            state.set_ql_code_str(layers.strings.into());
+            state.set_ql_code_cmt(layers.comments.into());
         }
         PreviewKind::Video => {
             // 视频：内容由 Media Foundation 子窗口渲染（main.rs 打开预览时启动），

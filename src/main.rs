@@ -154,6 +154,8 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // 启动时推送已保存的网络位置列表（设置「云存储账号」页展示）
     ui_bridge::push_network_locations(&ui, &core.borrow());
+    // 启动时推送自定义标签定义（工具栏「标记」下拉与侧栏同步）
+    ui_bridge::push_custom_tags(&ui, &core.borrow());
 
     // —— 绑定全部回调 ——
     bind_navigation(&ui, &core);
@@ -580,6 +582,47 @@ fn bind_layout(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             reload_active_pane(&ui, &c);
             // 刷新「标记」下拉的对勾状态
             ui_bridge::update_selection_pane(&ui, &c.borrow(), right);
+        }
+    });
+
+    // 添加自定义标签：新建定义并持久化，推送至「标记」下拉与侧栏
+    let w = ui.as_weak();
+    let c = core.clone();
+    state.on_add_custom_tag(move |name, color| {
+        if let Some(ui) = w.upgrade() {
+            {
+                let mut core = c.borrow_mut();
+                core.config.add_custom_tag(name.as_str(), color.as_str());
+                core.config.save();
+            }
+            ui_bridge::push_custom_tags(&ui, &c.borrow());
+            // 侧栏标签分区需重建（新增节点 + 计数）
+            ui.global::<AppState>().set_nav_items(ui_bridge::build_sidebar(
+                &c.borrow().active_tab().history.current(),
+                &c.borrow().collapsed_sections,
+                &c.borrow().config,
+            ));
+            ui_bridge::update_selection_pane(&ui, &c.borrow(), toolbar_routes_right(&ui));
+        }
+    });
+
+    // 删除自定义标签：移除定义并清理文件上的该标签
+    let w = ui.as_weak();
+    let c = core.clone();
+    state.on_remove_custom_tag(move |id| {
+        if let Some(ui) = w.upgrade() {
+            {
+                let mut core = c.borrow_mut();
+                core.config.remove_custom_tag(id.as_str());
+                core.config.save();
+            }
+            ui_bridge::push_custom_tags(&ui, &c.borrow());
+            ui.global::<AppState>().set_nav_items(ui_bridge::build_sidebar(
+                &c.borrow().active_tab().history.current(),
+                &c.borrow().collapsed_sections,
+                &c.borrow().config,
+            ));
+            reload_active_pane(&ui, &c);
         }
     });
 
@@ -1291,7 +1334,12 @@ fn start_next_job(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     // 任务期间用户改设置属极小概率，偏差由下次全量重建修正。
     let bg_index = core.borrow().config.settings.background_index;
     std::thread::spawn(move || {
-        let result = fs::tasks::run(
+        // catch_unwind 包裹 run：任务执行或内部库 panic 时仍构造错误结果，保证
+        // 下方 task-finished 一定触发、task_control 一定清理。否则一次 panic 会让
+        // task_control 永久卡在 Some，start_next_job 对后续复制/剪切/粘贴静默 return，
+        // 表现为「复制粘贴大部分情况无法使用」。
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        fs::tasks::run(
             job,
             ctrl,
             move |p| {
@@ -1333,7 +1381,15 @@ fn start_next_job(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                     apply_all: false,
                 })
             },
-        );
+        )})) {
+            Ok(r) => r,
+            Err(_) => fs::tasks::TaskResult {
+                ok: 0,
+                skipped: 0,
+                error: "任务执行异常（内部错误）".into(),
+                cancelled: false,
+            },
+        };
 
         // 完成：回主线程触发 task-finished（在那里访问 core 重载目录、串联下一项）
         let _ = slint::invoke_from_event_loop(move || {
@@ -1420,8 +1476,18 @@ fn rename_in_pane(
         .borrow()
         .pane_entry_at(right, idx as usize)
         .map(|e| PathBuf::from(&e.path));
+    let trimmed = new_name.trim();
+    // 名称未变（含清空或仅空白差异）：直接退出编辑，跳过文件系统重命名与全目录重载。
+    // 点击别处退出重命名时按下层 pointer-event 会触发本提交，若每次都 reload 整个目录
+    // （重读目录 + 重建模型 + 图标缓存查询）在大目录下明显卡顿；名称未变时无需任何副作用。
+    let unchanged = trimmed.is_empty()
+        || old
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy() == trimmed)
+            .unwrap_or(true);
     if let Some(old) = old {
-        if !new_name.trim().is_empty() {
+        if !trimmed.is_empty() && !unchanged {
             match ops::rename(&old, new_name) {
                 Ok(new_path) => {
                     c.borrow_mut().record_undo(app::UndoAction::Rename {
@@ -1456,10 +1522,13 @@ fn rename_in_pane(
         }
     }
     ui.invoke_clear_editing();
-    if right {
-        load_right(ui, c);
-    } else {
-        load_current(ui, c);
+    // 名称未变则无需重载目录（否则反而引入卡顿）
+    if !unchanged {
+        if right {
+            load_right(ui, c);
+        } else {
+            load_current(ui, c);
+        }
     }
 }
 
@@ -2310,7 +2379,7 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     let c = core.clone();
     state.on_copy_selected(move || {
         if let Some(ui) = w.upgrade() {
-            let has_clips = {
+            let paths = {
                 let mut core = c.borrow_mut();
                 core.clipboard = if toolbar_routes_right(&ui) {
                     core.right_pane.selected_paths()
@@ -2318,9 +2387,13 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                     core.selected_paths()
                 };
                 core.clip_mode = ClipMode::Copy;
-                !core.clipboard.is_empty()
+                core.clipboard.clone()
             };
-            // 同步「粘贴」按钮可用性
+            let has_clips = !paths.is_empty();
+            // 同步写入系统剪贴板（CF_HDROP）：跨文件夹/盘/标签及资源管理器互通
+            if has_clips {
+                fs::clipboard::set_files(&paths, false);
+            }
             ui.global::<AppState>().set_can_paste(has_clips);
         }
     });
@@ -2330,7 +2403,7 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     let c = core.clone();
     state.on_cut_selected(move || {
         if let Some(ui) = w.upgrade() {
-            let has_clips = {
+            let paths = {
                 let mut core = c.borrow_mut();
                 core.clipboard = if toolbar_routes_right(&ui) {
                     core.right_pane.selected_paths()
@@ -2338,8 +2411,12 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                     core.selected_paths()
                 };
                 core.clip_mode = ClipMode::Cut;
-                !core.clipboard.is_empty()
+                core.clipboard.clone()
             };
+            let has_clips = !paths.is_empty();
+            if has_clips {
+                fs::clipboard::set_files(&paths, true);
+            }
             ui.global::<AppState>().set_can_paste(has_clips);
         }
     });
@@ -2351,19 +2428,28 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         if let Some(ui) = w.upgrade() {
             // 目标目录取活动面板（右侧活动 → right_pane 当前目录，否则活动标签）
             let routes_right = toolbar_routes_right(&ui);
-            let (clips, mode, dst) = {
+            // 优先读系统剪贴板（CF_HDROP，可与资源管理器互通）；无文件则回退内部剪贴板
+            let (clips, is_cut, dst) = {
                 let core = c.borrow();
                 let dst = if routes_right {
                     core.right_pane.history.current().clone()
                 } else {
                     core.active_tab().history.current().clone()
                 };
-                (core.clipboard.clone(), core.clip_mode, dst)
+                if let Some((sys_paths, sys_cut)) = fs::clipboard::get_files() {
+                    (sys_paths, sys_cut, dst)
+                } else if core.clip_mode != ClipMode::None && !core.clipboard.is_empty() {
+                    (core.clipboard.clone(), core.clip_mode == ClipMode::Cut, dst)
+                } else {
+                    (Vec::new(), false, dst)
+                }
             };
-            if mode == ClipMode::None || clips.is_empty() {
+            if clips.is_empty() {
+                ui.global::<AppState>()
+                    .set_status_text("剪贴板无内容可粘贴".into());
                 return;
             }
-            let kind = if mode == ClipMode::Cut {
+            let kind = if is_cut {
                 fs::tasks::TaskKind::Move
             } else {
                 fs::tasks::TaskKind::Copy
@@ -2371,7 +2457,7 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             {
                 let mut core = c.borrow_mut();
                 // 剪切=移动：乐观记录撤销（源→目标，撤销时移回）。假定无同名冲突重命名。
-                if mode == ClipMode::Cut {
+                if is_cut {
                     let pairs: Vec<(PathBuf, PathBuf)> = clips
                         .iter()
                         .filter_map(|src| src.file_name().map(|n| (src.clone(), dst.join(n))))
@@ -2384,12 +2470,14 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                     dst,
                 });
                 // 剪切粘贴后清空剪贴板，避免重复移动
-                if mode == ClipMode::Cut {
+                if is_cut {
                     core.clipboard.clear();
                     core.clip_mode = ClipMode::None;
                 }
             }
-            if mode == ClipMode::Cut {
+            if is_cut {
+                // 清空系统剪贴板中的文件数据，避免重复移动
+                fs::clipboard::clear_files();
                 ui.global::<AppState>().set_can_paste(false);
             }
             start_next_job(&ui, &c);
@@ -4108,10 +4196,11 @@ fn bind_hash(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     });
 
     // 关闭 Quick Look：同时停止可能进行中的视频播放与网页渲染
-    let w = ui.as_weak();
+    let w_close = ui.as_weak();
     state.on_close_quicklook(move || {
-        if let Some(ui) = w.upgrade() {
+        if let Some(ui) = w_close.upgrade() {
             fs::video_preview::stop();
+            stop_video_timer_impl();
             fs::web_preview::stop();
             let st = ui.global::<AppState>();
             if st.get_ql_video_fullscreen() {
@@ -4123,9 +4212,9 @@ fn bind_hash(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     });
 
     // 视频全屏：复用当前播放器，把主窗口切换为当前显示器的无边框全屏。
-    let w = ui.as_weak();
+    let w_fs = ui.as_weak();
     state.on_ql_toggle_video_fullscreen(move || {
-        if let Some(ui) = w.upgrade() {
+        if let Some(ui) = w_fs.upgrade() {
             let st = ui.global::<AppState>();
             if !st.get_quicklook_open() || st.get_ql_kind() != 4 {
                 return;
@@ -4134,6 +4223,32 @@ fn bind_hash(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             st.set_ql_video_fullscreen(fullscreen);
             set_quicklook_window_fullscreen(&ui, fullscreen);
             schedule_video_repositions(&ui, &[40, 180]);
+        }
+    });
+
+    // 播放 / 暂停切换
+    let w_play = ui.as_weak();
+    state.on_ql_video_toggle_play(move || {
+        let paused = fs::video_preview::toggle_play();
+        if let Some(ui) = w_play.upgrade() {
+            ui.global::<AppState>().set_ql_video_paused(paused);
+        }
+    });
+
+    // 进度条拖动 / 点击跳转：比例 0.0..1.0 → 100ns 位置
+    let w = ui.as_weak();
+    state.on_ql_video_seek(move |ratio| {
+        if let Some(ui) = w.upgrade() {
+            let st = ui.global::<AppState>();
+            let dur = st.get_ql_video_duration();
+            if dur <= 0 {
+                return;
+            }
+            let r = ratio.clamp(0.0, 1.0);
+            let sec = (dur as f64 * r as f64) as i64;
+            // 秒 -> 100ns
+            fs::video_preview::seek_100ns(sec * 10_000_000);
+            st.set_ql_video_position(sec as i32);
         }
     });
 
@@ -4185,12 +4300,17 @@ fn quicklook_content_rect_phys(ui: &MainWindow) -> Option<(i32, i32, i32, i32)> 
         if st.get_ql_kind() == 4 {
             let vw = st.get_ql_img_w().max(0) as f32;
             let vh = st.get_ql_img_h().max(0) as f32;
+            // 底部预留控制条高度：视频原生子窗口在其上方区域居中，避免遮挡 Slint 控件
+            let avail_h = (content_h - ui_bridge::QL_VIDEO_CTRL_H * scale).max(1.0);
             if vw > 0.0 && vh > 0.0 {
-                let fit = (card_w / vw).min(content_h / vh);
+                let fit = (card_w / vw).min(avail_h / vh);
                 width = vw * fit;
                 height = vh * fit;
                 x += (card_w - width) / 2.0;
-                y += (content_h - height) / 2.0;
+                y += (avail_h - height) / 2.0;
+            } else {
+                // 视频尺寸未知：子窗口覆盖控制条以上的内容区
+                height = avail_h;
             }
         }
         out = Some((x as i32, y as i32, width as i32, height as i32));
@@ -4239,18 +4359,23 @@ fn quicklook_fullscreen_rect_phys(ui: &MainWindow) -> Option<(i32, i32, i32, i32
     let st = ui.global::<AppState>();
     ui.window().with_winit_window(|window| {
         let size = window.inner_size();
+        let scale = window.scale_factor() as f32;
         let mut width = size.width as f32;
         let mut height = size.height as f32;
         let mut x = 0.0;
         let mut y = 0.0;
         let vw = st.get_ql_img_w().max(0) as f32;
         let vh = st.get_ql_img_h().max(0) as f32;
+        // 底部预留控制条高度，视频在上方区域居中
+        let avail_h = (height - ui_bridge::QL_VIDEO_CTRL_H * scale).max(1.0);
         if vw > 0.0 && vh > 0.0 {
-            let fit = (width / vw).min(height / vh);
+            let fit = (width / vw).min(avail_h / vh);
             width = vw * fit;
             height = vh * fit;
             x = (size.width as f32 - width) / 2.0;
-            y = (size.height as f32 - height) / 2.0;
+            y = (avail_h - height) / 2.0;
+        } else {
+            height = avail_h;
         }
         out = Some((x as i32, y as i32, width as i32, height as i32));
     });
@@ -4277,6 +4402,42 @@ fn main_hwnd(ui: &MainWindow) -> isize {
     hwnd_isize
 }
 
+/// 视频预览进度轮询定时器（UI 线程）：播放期间每 250ms 读取 MFPlay 位置刷新进度条。
+/// 句柄存于 thread_local，关闭预览时 stop 释放。
+thread_local! {
+    static VIDEO_TIMER: std::cell::RefCell<Option<slint::Timer>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn start_video_timer(ui: &MainWindow) {
+    let weak = ui.as_weak();
+    let timer = slint::Timer::default();
+    timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(250),
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                let (cur, dur) = fs::video_preview::position();
+                let st = ui.global::<AppState>();
+                // 100ns -> 秒（Slint int 是 i32）
+                st.set_ql_video_position((cur / 10_000_000) as i32);
+                if dur > 0 {
+                    st.set_ql_video_duration((dur / 10_000_000) as i32);
+                }
+            }
+        },
+    );
+    VIDEO_TIMER.with(|t| {
+        *t.borrow_mut() = Some(timer);
+    });
+}
+
+fn stop_video_timer_impl() {
+    VIDEO_TIMER.with(|t| {
+        *t.borrow_mut() = None;
+    });
+}
+
 /// 启动视频预览：子窗口对齐内容区，媒体源异步加载（不阻塞 UI）；
 /// 分辨率就绪后回调 on_video_size_ready 把卡片调整为视频宽高比。
 #[cfg(windows)]
@@ -4301,6 +4462,13 @@ fn start_video_preview(ui: &MainWindow, path: &str) {
     if !ok {
         ui.global::<AppState>()
             .set_status_text("视频播放启动失败（编解码器不支持）".into());
+    } else {
+        // 复位进度并启动轮询定时器刷新进度条
+        let st = ui.global::<AppState>();
+        st.set_ql_video_position(0);
+        st.set_ql_video_duration(0);
+        st.set_ql_video_paused(false);
+        start_video_timer(ui);
     }
 }
 
@@ -4543,6 +4711,11 @@ fn apply_current_window_effects(ui: &MainWindow) {
     install_native_resize(ui);
     apply_window_round_corners(ui);
     apply_window_material(ui);
+    // 无条件剥离 WS_SYSMENU：winit 无边框窗口仍会带上 WS_SYSMENU，Windows 11 DWM
+    // 据此自绘一套原生标题栏按钮（最小化/最大化/关闭），与本程序自绘按钮重叠成「两套」。
+    // 此前仅在半透明（延伸边框）时剥离，导致默认非透明模式下原生按钮在最大化/DPI
+    // 变更等触发 DWM 重算后重现。此处随重试序列与最大化 80ms 补刷一并调用，恒久消除。
+    strip_native_caption_buttons(ui);
 }
 
 #[cfg(windows)]

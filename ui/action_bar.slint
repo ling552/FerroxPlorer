@@ -90,10 +90,12 @@ component NewMenuRow inherits Rectangle {
     }
 }
 
-// "标记"下拉的单行：对勾图标 + 文字，悬停高亮。on 为真时左侧显示对勾。
+// "标记"下拉的单行：对勾图标 + 颜色圆点(可选) + 文字，悬停高亮。on 为真时左侧显示对勾。
 component TagMenuRow inherits Rectangle {
     in property <bool> on;
     in property <string> label;
+    // 自定义标签颜色圆点（固定标签留透明，占位以与自定义标签文字对齐）
+    in property <brush> dot-color: transparent;
     callback clicked;
     height: Theme.row-h;
     border-radius: Theme.radius-btn;
@@ -111,6 +113,13 @@ component TagMenuRow inherits Rectangle {
             color: touch.has-hover ? Theme.primary : Theme.primary;
             vertical-alignment: center;
             horizontal-alignment: center;
+        }
+        // 颜色圆点（自定义标签可见，固定标签透明占位）
+        Rectangle {
+            width: 10px; height: 10px;
+            border-radius: 5px;
+            background: root.dot-color;
+            y: (parent.height - 10px) / 2;
         }
         Text {
             text: root.label;
@@ -196,6 +205,21 @@ component TagButton inherits Rectangle {
                     on: AppState.sel-tag-done;
                     label: "标记为 · 已完成";
                     clicked => { AppState.tag-selected("done"); popup.close(); }
+                }
+                // 自定义标签（顺序与侧栏一致，显示于「添加标签」之上）
+                for t[i] in AppState.custom-tags: TagMenuRow {
+                    on: AppState.sel-custom-tag-bools[i];
+                    dot-color: t.color;
+                    label: t.name;
+                    clicked => { AppState.tag-selected("custom:" + t.id); popup.close(); }
+                }
+                // 分隔线
+                Rectangle { height: 11px; Rectangle { y: 5px; height: 1px; background: Theme.border; } }
+                // 「添加标签」始终位于菜单最底部：新建后该标签显示在其上方
+                TagMenuRow {
+                    on: false;
+                    label: "添加标签";
+                    clicked => { AppState.tag-dialog-open = true; popup.close(); }
                 }
             }
         }
