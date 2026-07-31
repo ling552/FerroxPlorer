@@ -4455,48 +4455,6 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-/// 控制条区域（物理像素，主窗口客户区坐标）：卡片/全屏两种布局下内容区底部
-/// QL_VIDEO_CTRL_H 高度的横条。用于鼠标悬停控制条时不触发自动隐藏。
-#[cfg(windows)]
-fn controls_rect_phys(ui: &MainWindow) -> Option<(i32, i32, i32, i32)> {
-    let mut out = None;
-    let st = ui.global::<AppState>();
-    ui.window().with_winit_window(|w| {
-        let scale = w.scale_factor() as f32;
-        let size = w.inner_size();
-        let ctrl_h = ui_bridge::QL_VIDEO_CTRL_H * scale;
-        if st.get_ql_video_fullscreen() {
-            out = Some((0, (size.height as f32 - ctrl_h) as i32, size.width as i32, ctrl_h as i32));
-        } else {
-            let card_w = st.get_ql_card_w() * scale;
-            let card_h = st.get_ql_card_h() * scale;
-            let card_x = (size.width as f32 - card_w) / 2.0;
-            let card_y = (size.height as f32 - card_h) / 2.0;
-            let y = card_y + card_h - ui_bridge::QL_FOOTER_H * scale - ctrl_h;
-            out = Some((card_x as i32, y as i32, card_w as i32, ctrl_h as i32));
-        }
-    });
-    out
-}
-
-/// 判断屏幕坐标点是否落在控制条区域内。
-#[cfg(windows)]
-fn cursor_over_controls(ui: &MainWindow, sx: i32, sy: i32) -> bool {
-    use windows_sys::Win32::Foundation::POINT;
-    use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
-    let hwnd = main_hwnd(ui);
-    if hwnd == 0 {
-        return false;
-    }
-    let mut pt = POINT { x: sx, y: sy };
-    if unsafe { ScreenToClient(hwnd as *mut core::ffi::c_void, &mut pt) } == 0 {
-        return false;
-    }
-    controls_rect_phys(ui)
-        .map(|(x, y, w, h)| pt.x >= x && pt.x < x + w && pt.y >= y && pt.y < y + h)
-        .unwrap_or(false)
-}
-
 /// 控制条显隐变化后按当前布局重新对齐视频子窗口（显示时让出底部，隐藏时占满）。
 #[cfg(windows)]
 fn reposition_video_now(ui: &MainWindow) {
@@ -4514,8 +4472,8 @@ fn reposition_video_now(ui: &MainWindow) {
     }
 }
 
-/// 视频轮询中的鼠标活动检测：光标移动即显示控制条，静止 5 秒且不在控制条上则隐藏。
-/// 视频画面由原生 MF 子窗口渲染，Slint 收不到其上方的鼠标移动，必须在 UI 线程
+/// 视频轮询中的鼠标活动检测：光标移动即显示控制条，无论停在画面还是控制条上，
+/// 静止满 5 秒均隐藏。视频画面由原生 MF 子窗口渲染，Slint 收不到其上方的鼠标移动，必须在 UI 线程
 /// 轮询 GetCursorPos 实现（250ms 一次，开销可忽略）。
 #[cfg(windows)]
 fn poll_video_controls_visibility(ui: &MainWindow) {
@@ -4547,7 +4505,7 @@ fn poll_video_controls_visibility(ui: &MainWindow) {
         .with(|t| t.get())
         .map(|t0| now.duration_since(t0))
         .unwrap_or_default();
-    if idle >= std::time::Duration::from_secs(5) && !cursor_over_controls(ui, pt.x, pt.y) {
+    if idle >= std::time::Duration::from_secs(5) {
         st.set_ql_controls_visible(false);
         reposition_video_now(ui);
     }
