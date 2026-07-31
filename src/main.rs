@@ -4213,6 +4213,8 @@ fn bind_hash(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             let st = ui.global::<AppState>();
             if st.get_ql_video_fullscreen() {
                 set_quicklook_window_fullscreen(&ui, false);
+                #[cfg(windows)]
+                schedule_window_effects(&ui, &[40, 180, 500]);
             }
             st.set_ql_video_fullscreen(false);
             st.set_quicklook_open(false);
@@ -4231,6 +4233,10 @@ fn bind_hash(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             st.set_ql_video_fullscreen(fullscreen);
             set_quicklook_window_fullscreen(&ui, fullscreen);
             schedule_video_repositions(&ui, &[40, 180]);
+            // winit 全屏切换会触发 Windows 非客户区重算，可能重新带回原生标题栏按钮；
+            // 延迟重新应用无边框样式，确保进入和退出全屏都只保留应用自绘的一套按钮。
+            #[cfg(windows)]
+            schedule_window_effects(&ui, &[40, 180, 500]);
         }
     });
 
@@ -4308,8 +4314,8 @@ fn bind_hash(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
 
 /// 预览卡片内容区在窗口内的物理像素矩形。
 /// 与 quick_look.slint 布局约定一致：卡片（AppState.ql-card-w/h 逻辑像素）居中、
-/// 头部/底部高度取 ui_bridge::QL_HEADER_H/QL_FOOTER_H——卡片尺寸唯一来源是
-/// ui_bridge::apply_ql_card_size，视频/网页原生子窗口据此对齐覆盖。
+/// 头部高度取 ui_bridge::QL_HEADER_H；非视频预览另有 QL_FOOTER_H，视频则一直延伸
+/// 到卡片底边。卡片尺寸唯一来源是 ui_bridge::apply_ql_card_size，原生子窗口据此对齐。
 #[cfg(windows)]
 fn quicklook_content_rect_phys(ui: &MainWindow) -> Option<(i32, i32, i32, i32)> {
     let mut out = None;
@@ -4324,7 +4330,14 @@ fn quicklook_content_rect_phys(ui: &MainWindow) -> Option<(i32, i32, i32, i32)> 
         let card_x = (win_w - card_w) / 2.0;
         let card_y = (win_h - card_h) / 2.0;
         let content_y = card_y + ui_bridge::QL_HEADER_H * scale;
-        let content_h = card_h - (ui_bridge::QL_HEADER_H + ui_bridge::QL_FOOTER_H) * scale;
+        // 视频不再渲染独立的底部提示栏，画面一直延伸到卡片底部；
+        // 其它预览仍为底部提示保留固定高度。
+        let footer_h = if st.get_ql_kind() == 4 {
+            0.0
+        } else {
+            ui_bridge::QL_FOOTER_H
+        };
+        let content_h = card_h - (ui_bridge::QL_HEADER_H + footer_h) * scale;
         let mut x = card_x;
         let mut y = content_y;
         let mut width = card_w;
@@ -4332,22 +4345,17 @@ fn quicklook_content_rect_phys(ui: &MainWindow) -> Option<(i32, i32, i32, i32)> 
         if st.get_ql_kind() == 4 {
             let vw = st.get_ql_img_w().max(0) as f32;
             let vh = st.get_ql_img_h().max(0) as f32;
-            // 控制条显示时底部预留其高度，视频原生子窗口在上方居中（原生窗口会遮挡
-            // Slint 控件）；控制条隐藏时视频占满整个内容区，获得更大画面。
-            let avail_h = if st.get_ql_controls_visible() {
-                (content_h - ui_bridge::QL_VIDEO_CTRL_H * scale).max(1.0)
-            } else {
-                content_h
-            };
+            // 控制条是叠加在视频底部的半透明覆盖层，视频子窗口始终铺满
+            // 整个视频内容区；不能为控制条单独扣除高度，否则底部会出现空白。
             if vw > 0.0 && vh > 0.0 {
-                let fit = (card_w / vw).min(avail_h / vh);
+                let fit = (card_w / vw).min(content_h / vh);
                 width = vw * fit;
                 height = vh * fit;
                 x += (card_w - width) / 2.0;
-                y += (avail_h - height) / 2.0;
+                y += (content_h - height) / 2.0;
             } else {
-                // 视频尺寸未知：子窗口覆盖控制条以上的内容区
-                height = avail_h;
+                // 视频尺寸未知：子窗口覆盖完整内容区，分辨率就绪后再按比例居中。
+                height = content_h;
             }
         }
         out = Some((x as i32, y as i32, width as i32, height as i32));
@@ -4358,6 +4366,8 @@ fn quicklook_content_rect_phys(ui: &MainWindow) -> Option<(i32, i32, i32, i32)> 
 /// 切换主窗口无边框全屏。
 fn set_quicklook_window_fullscreen(ui: &MainWindow, fullscreen: bool) {
     ui.window().with_winit_window(|window| {
+        // 主窗口已经由 Slint no-frame 配置为无边框并自绘标题栏；这里仅切换
+        // Borderless 全屏，不改 decorations，避免 Windows 临时重建第二套标题栏按钮。
         window.set_fullscreen(if fullscreen {
             Some(winit::window::Fullscreen::Borderless(window.current_monitor()))
         } else {
@@ -4396,27 +4406,19 @@ fn quicklook_fullscreen_rect_phys(ui: &MainWindow) -> Option<(i32, i32, i32, i32
     let st = ui.global::<AppState>();
     ui.window().with_winit_window(|window| {
         let size = window.inner_size();
-        let scale = window.scale_factor() as f32;
         let mut width = size.width as f32;
         let mut height = size.height as f32;
         let mut x = 0.0;
         let mut y = 0.0;
         let vw = st.get_ql_img_w().max(0) as f32;
         let vh = st.get_ql_img_h().max(0) as f32;
-        // 控制条显示时底部预留其高度，隐藏时视频占满全屏
-        let avail_h = if st.get_ql_controls_visible() {
-            (height - ui_bridge::QL_VIDEO_CTRL_H * scale).max(1.0)
-        } else {
-            height
-        };
+        // 全屏控制条同样覆盖在画面底部，不能从视频高度中扣除控制条高度。
         if vw > 0.0 && vh > 0.0 {
-            let fit = (width / vw).min(avail_h / vh);
+            let fit = (width / vw).min(height / vh);
             width = vw * fit;
             height = vh * fit;
             x = (size.width as f32 - width) / 2.0;
-            y = (avail_h - height) / 2.0;
-        } else {
-            height = avail_h;
+            y = (size.height as f32 - height) / 2.0;
         }
         out = Some((x as i32, y as i32, width as i32, height as i32));
     });
@@ -4455,46 +4457,72 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-/// 控制条显隐变化后按当前布局重新对齐视频子窗口（显示时让出底部，隐藏时占满）。
-#[cfg(windows)]
-fn reposition_video_now(ui: &MainWindow) {
-    let st = ui.global::<AppState>();
-    if !st.get_quicklook_open() || st.get_ql_kind() != 4 {
-        return;
-    }
-    let rect = if st.get_ql_video_fullscreen() {
-        quicklook_fullscreen_rect_phys(ui)
-    } else {
-        quicklook_content_rect_phys(ui)
-    };
-    if let Some(rect) = rect {
-        fs::video_preview::reposition(rect);
-    }
-}
 
-/// 视频轮询中的鼠标活动检测：光标移动即显示控制条，无论停在画面还是控制条上，
-/// 静止满 5 秒均隐藏。视频画面由原生 MF 子窗口渲染，Slint 收不到其上方的鼠标移动，必须在 UI 线程
-/// 轮询 GetCursorPos 实现（250ms 一次，开销可忽略）。
+/// 视频轮询中的鼠标活动检测：光标在当前预览卡片内移动就显示控制条；
+/// 卡片外移动不会唤醒。静止满 5 秒后隐藏原生覆盖层。
 #[cfg(windows)]
 fn poll_video_controls_visibility(ui: &MainWindow) {
     use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
     use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
     let st = ui.global::<AppState>();
     if !st.get_quicklook_open() || st.get_ql_kind() != 4 {
         return;
     }
-    let mut pt = POINT { x: 0, y: 0 };
-    if unsafe { GetCursorPos(&mut pt) } == 0 {
+    // 唤醒范围按“预览窗口”而不是仅视频像素区域计算：横竖屏视频即使因
+    // 等比适配在卡片内有边带，鼠标移到标题栏或边带也应视为该窗口内活动。
+    let rect = if st.get_ql_video_fullscreen() {
+        let mut rect = None;
+        ui.window().with_winit_window(|window| {
+            let size = window.inner_size();
+            rect = Some((0, 0, size.width as i32, size.height as i32));
+        });
+        rect
+    } else {
+        let mut rect = None;
+        let card_w = st.get_ql_card_w();
+        let card_h = st.get_ql_card_h();
+        ui.window().with_winit_window(|window| {
+            let scale = window.scale_factor() as f32;
+            let size = window.inner_size();
+            let width = (card_w * scale) as i32;
+            let height = (card_h * scale) as i32;
+            rect = Some((
+                (size.width as i32 - width) / 2,
+                (size.height as i32 - height) / 2,
+                width,
+                height,
+            ));
+        });
+        rect
+    };
+    let Some(rect) = rect else {
+        return;
+    };
+    let hwnd = main_hwnd(ui) as windows_sys::Win32::Foundation::HWND;
+    if hwnd.is_null() {
         return;
     }
+    let mut origin = POINT { x: rect.0, y: rect.1 };
+    if unsafe { ClientToScreen(hwnd, &mut origin) } == 0 {
+        return;
+    }
+    let mut cursor = POINT { x: 0, y: 0 };
+    if unsafe { GetCursorPos(&mut cursor) } == 0 {
+        return;
+    }
+    let inside = cursor.x >= origin.x
+        && cursor.x < origin.x + rect.2
+        && cursor.y >= origin.y
+        && cursor.y < origin.y + rect.3;
     let now = std::time::Instant::now();
-    let last = MOUSE_LAST_POS.with(|p| p.replace((pt.x, pt.y)));
-    if last != (pt.x, pt.y) {
+    let last = MOUSE_LAST_POS.with(|p| p.replace((cursor.x, cursor.y)));
+    if inside && last != (cursor.x, cursor.y) {
         MOUSE_LAST_ACTIVE.with(|t| t.set(Some(now)));
         if !st.get_ql_controls_visible() {
             st.set_ql_controls_visible(true);
-            reposition_video_now(ui);
+            fs::video_preview::set_controls_visible(true);
         }
         return;
     }
@@ -4507,7 +4535,7 @@ fn poll_video_controls_visibility(ui: &MainWindow) {
         .unwrap_or_default();
     if idle >= std::time::Duration::from_secs(5) {
         st.set_ql_controls_visible(false);
-        reposition_video_now(ui);
+        fs::video_preview::set_controls_visible(false);
     }
 }
 
@@ -4529,7 +4557,13 @@ fn start_video_timer(ui: &MainWindow) {
                 if dur > 0 {
                     st.set_ql_video_duration((dur / 10_000_000) as i32);
                 }
-                // 鼠标活动 → 显示控制条；静止 5 秒 → 隐藏
+                fs::video_preview::update_controls(
+                    st.get_ql_video_position(),
+                    st.get_ql_video_duration(),
+                    st.get_ql_video_paused(),
+                    st.get_ql_video_muted(),
+                );
+                // 预览卡片内鼠标活动 → 显示；静止 5 秒 → 隐藏
                 poll_video_controls_visibility(&ui);
             }
         },
@@ -4557,6 +4591,10 @@ fn start_video_preview(ui: &MainWindow, path: &str) {
         return;
     }
     let wk = ui.as_weak();
+    let play_weak = ui.as_weak();
+    let replay_weak = ui.as_weak();
+    let mute_weak = ui.as_weak();
+    let seek_weak = ui.as_weak();
     let ok = fs::video_preview::start(
         hwnd,
         rect,
@@ -4565,6 +4603,43 @@ fn start_video_preview(ui: &MainWindow, path: &str) {
             // MFPlay 回调线程 → UI 线程
             let _ = wk.upgrade_in_event_loop(move |ui| on_video_size_ready(&ui, vw, vh));
         }),
+        fs::video_preview::ControlCallbacks {
+            toggle_play: Box::new(move || {
+                if let Some(ui) = play_weak.upgrade() {
+                    let paused = fs::video_preview::toggle_play();
+                    ui.global::<AppState>().set_ql_video_paused(paused);
+                }
+            }),
+            replay: Box::new(move || {
+                fs::video_preview::seek_100ns(0);
+                if fs::video_preview::is_paused() {
+                    let _ = fs::video_preview::toggle_play();
+                }
+                if let Some(ui) = replay_weak.upgrade() {
+                    let st = ui.global::<AppState>();
+                    st.set_ql_video_position(0);
+                    st.set_ql_video_paused(false);
+                }
+            }),
+            mute: Box::new(move || {
+                let muted = !fs::video_preview::is_muted();
+                fs::video_preview::set_muted(muted);
+                if let Some(ui) = mute_weak.upgrade() {
+                    ui.global::<AppState>().set_ql_video_muted(muted);
+                }
+            }),
+            seek: Box::new(move |ratio| {
+                if let Some(ui) = seek_weak.upgrade() {
+                    let st = ui.global::<AppState>();
+                    let duration = st.get_ql_video_duration();
+                    if duration > 0 {
+                        let second = (duration as f32 * ratio.clamp(0.0, 1.0)) as i64;
+                        fs::video_preview::seek_100ns(second * 10_000_000);
+                        st.set_ql_video_position(second as i32);
+                    }
+                }
+            }),
+        },
     );
     if !ok {
         ui.global::<AppState>()
@@ -5179,9 +5254,25 @@ unsafe extern "system" fn hit_test_wndproc(
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallWindowProcW, DefWindowProcW, GetWindowRect, IsZoomed, HTBOTTOM, HTBOTTOMLEFT,
-        HTBOTTOMRIGHT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, WM_NCHITTEST,
+        CallWindowProcW, DefWindowProcW, GetWindowRect, IsZoomed, GWL_STYLE, HTBOTTOM,
+        HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT,
+        STYLESTRUCT, WM_NCACTIVATE, WM_NCHITTEST, WM_STYLECHANGING, WS_CAPTION, WS_SYSMENU,
     };
+
+    // winit 在退出 Borderless 全屏时会先恢复系统窗口样式，随后才交还事件循环；
+    // 延迟调用 strip_native_caption_buttons 会留下约 0.5 秒的 Win7 非客户区按钮闪烁。
+    // 在 WM_STYLECHANGING 同步清除目标样式，系统从未真正收到带标题栏的 style。
+    if msg == WM_STYLECHANGING && wparam as i32 == GWL_STYLE {
+        let style = lparam as *mut STYLESTRUCT;
+        if !style.is_null() {
+            (*style).styleNew &= !(WS_CAPTION | WS_SYSMENU);
+        }
+    }
+    // 无边框窗口没有可绘制的非客户区；直接确认该消息，防止焦点状态变化时
+    // DWM 临时绘制一圈原生活动边框。
+    if msg == WM_NCACTIVATE {
+        return 1;
+    }
 
     // 最大化时关闭边缘 resize，避免最大化状态下拖边缘触发还原抖动
     if msg == WM_NCHITTEST && IsZoomed(hwnd) == 0 {

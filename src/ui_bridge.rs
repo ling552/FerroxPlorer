@@ -1466,10 +1466,6 @@ const QL_IMAGE_SIZE: u32 = 1600;
 /// 视频/网页原生子窗口矩形换算（main.rs quicklook_content_rect_phys）共用
 pub const QL_HEADER_H: f32 = 64.0;
 pub const QL_FOOTER_H: f32 = 38.0;
-/// 视频预览底部播放控制条高度（逻辑像素）：进度条占据内容区底部，
-/// 视频原生子窗口矩形据此下沿留白，避免原生窗口遮挡 Slint 控件。
-pub const QL_VIDEO_CTRL_H: f32 = 44.0;
-
 /// 按内容类型计算并应用预览卡片尺寸（逻辑像素）。
 /// `kind_code` 与 PreviewKind::code 一致；`iw`/`ih` 为图片或视频原生分辨率
 /// （未知传 0）；`web_mode` 表示 Markdown/HTML 的渲染视图。
@@ -1481,7 +1477,9 @@ pub fn apply_ql_card_size(ui: &MainWindow, kind_code: i32, iw: i32, ih: i32, web
     let size = ui.window().size();
     let win_w = size.width as f32 / scale;
     let win_h = size.height as f32 / scale;
-    let chrome = QL_HEADER_H + QL_FOOTER_H;
+    // 视频控制条直接覆盖在画面底部，不再显示单独的底部提示栏；其它预览保留提示栏。
+    let footer_h = if kind_code == 4 { 0.0 } else { QL_FOOTER_H };
+    let chrome = QL_HEADER_H + footer_h;
     // 内容区可用上限（窗口小则收缩，但不低于最小 256）
     let max_cw = (win_w - 96.0).clamp(256.0, 1200.0);
     let max_ch = (win_h - 96.0 - chrome).clamp(256.0, 900.0);
@@ -1504,9 +1502,9 @@ pub fn apply_ql_card_size(ui: &MainWindow, kind_code: i32, iw: i32, ih: i32, web
                 (704.0_f32.min(max_cw), 396.0_f32.min(max_ch))
             }
         }
-        // 视频：底部预留控制条高度，视频在剩余区域按宽高比适应；内容区=视频+控制条
+        // 视频：控制条覆盖在视频底部，视频画面本身铺满内容区，不产生额外空白。
         4 => {
-            let video_max_ch = (max_ch - QL_VIDEO_CTRL_H).max(120.0);
+            let video_max_ch = max_ch;
             if iw > 0 && ih > 0 {
                 let fit = (max_cw / iw as f32)
                     .min(video_max_ch / ih as f32)
@@ -1520,10 +1518,10 @@ pub fn apply_ql_card_size(ui: &MainWindow, kind_code: i32, iw: i32, ih: i32, web
                     width *= grow;
                     height *= grow;
                 }
-                (width.max(1.0), height.max(1.0) + QL_VIDEO_CTRL_H)
+                (width.max(1.0), height.max(1.0))
             } else {
-                // 视频分辨率未知（异步加载中）：先按 16:9 + 控制条，就绪后再调整
-                (704.0_f32.min(max_cw), 396.0_f32.min(video_max_ch) + QL_VIDEO_CTRL_H)
+                // 视频分辨率未知（异步加载中）：先按 16:9，就绪后再调整
+                (704.0_f32.min(max_cw), 396.0_f32.min(video_max_ch))
             }
         }
         // 文本/代码：渲染视图更大，源码视图中等

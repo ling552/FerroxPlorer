@@ -31,6 +31,15 @@ fn display_size(native: (u32, u32), aspect: (u32, u32)) -> (u32, u32) {
     (display_width as u32, display_height as u32)
 }
 
+/// 原生控制条回调。控制条位于 MFPlay 子窗口上方，因此按钮事件由原生窗口
+/// 转发到 Slint 状态回调，保持与非原生控件相同的播放、重播、静音和拖动行为。
+pub struct ControlCallbacks {
+    pub toggle_play: Box<dyn Fn() + Send>,
+    pub replay: Box<dyn Fn() + Send>,
+    pub mute: Box<dyn Fn() + Send>,
+    pub seek: Box<dyn Fn(f32) + Send>,
+}
+
 /// 启动播放：`parent` 为主窗口 HWND（isize），`rect` 为子窗口在父窗口客户区内的
 /// 物理像素位置 (x, y, w, h)，`path` 为视频文件完整路径。
 /// `ready(视频宽, 视频高)` 在媒体项就绪、开始播放时回调（UI 线程消息循环内）。
@@ -41,8 +50,9 @@ pub fn start(
     rect: (i32, i32, i32, i32),
     path: &str,
     ready: Box<dyn Fn(u32, u32) + Send>,
+    controls: ControlCallbacks,
 ) -> bool {
-    win_impl::start(parent, rect, path, ready)
+    win_impl::start(parent, rect, path, ready, controls)
 }
 
 #[cfg(not(windows))]
@@ -51,6 +61,7 @@ pub fn start(
     _rect: (i32, i32, i32, i32),
     _path: &str,
     _ready: Box<dyn Fn(u32, u32) + Send>,
+    _controls: ControlCallbacks,
 ) -> bool {
     false
 }
@@ -70,6 +81,30 @@ pub fn reposition(rect: (i32, i32, i32, i32)) {
 
 #[cfg(not(windows))]
 pub fn reposition(_rect: (i32, i32, i32, i32)) {}
+
+/// 设置原生半透明控制条的显示状态。控制条位于 MFPlay 视频子窗口上方。
+pub fn set_controls_visible(visible: bool) {
+    #[cfg(windows)]
+    win_impl::set_controls_visible(visible);
+}
+
+/// 将 Rust/Slint 播放状态同步到原生控制条并请求重绘。
+pub fn update_controls(position: i32, duration: i32, paused: bool, muted: bool) {
+    #[cfg(windows)]
+    win_impl::update_controls(position, duration, paused, muted);
+}
+
+/// 查询播放器是否处于暂停态。
+pub fn is_paused() -> bool {
+    #[cfg(windows)]
+    {
+        win_impl::is_paused()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
 
 /// 暂停 / 播放切换，返回切换后是否处于暂停态（true=已暂停）。未在播放时为空操作。
 #[cfg(windows)]
@@ -122,7 +157,14 @@ mod win_impl {
     use std::cell::{Cell, RefCell};
     use std::sync::atomic::{AtomicU64, Ordering};
     use windows::core::{implement, PCWSTR};
-    use windows::Win32::Foundation::{HWND, SIZE};
+    use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
+    use windows::Win32::Graphics::Gdi::{
+        BeginPaint, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, Ellipse,
+        EndPaint, FillRect, InvalidateRect, RoundRect, SelectObject, SetBkMode, SetTextColor,
+        ANTIALIASED_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER,
+        DT_SINGLELINE, DT_VCENTER, FW_NORMAL, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID,
+        TRANSPARENT,
+    };
     use windows::Win32::Media::MediaFoundation::{
         IMFPMediaPlayer, IMFPMediaPlayerCallback, IMFPMediaPlayerCallback_Impl,
         MFPCreateMediaPlayer, MFP_EVENT_HEADER, MFP_EVENT_TYPE_MEDIAITEM_CREATED,
@@ -131,18 +173,47 @@ mod win_impl {
     };
     use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, MoveWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WS_CHILD,
-        WS_CLIPSIBLINGS, WS_VISIBLE,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetWindowLongPtrW,
+        MoveWindow, RegisterClassW, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos,
+        ShowWindow, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HWND_TOP, LWA_ALPHA,
+        MA_NOACTIVATE, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_SHOWWINDOW, WNDCLASSW,
+        WINDOW_EX_STYLE, WINDOW_STYLE, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP,
+        WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WS_CHILD,
+        WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_VISIBLE,
     };
 
     /// STATIC 控件的 SS_BLACKRECT 样式：黑色矩形填充，免自绘视频底色
     const SS_BLACKRECT_STYLE: u32 = 0x0004;
 
+    const CONTROL_H: i32 = 48;
+
+    #[derive(Clone, Copy)]
+    struct ControlState {
+        position: i32,
+        duration: i32,
+        paused: bool,
+        muted: bool,
+        visible: bool,
+    }
+
+    struct ControlWindowData {
+        callbacks: super::ControlCallbacks,
+        owner: isize,
+        dragging: bool,
+    }
+
     thread_local! {
-        // (播放器, 子窗口句柄)：仅 UI 线程访问
-        static ACTIVE: RefCell<Option<(IMFPMediaPlayer, isize)>> = const { RefCell::new(None) };
+        // (播放器, 视频子窗口句柄, 原生控制条句柄)：仅 UI 线程访问
+        static ACTIVE: RefCell<Option<(IMFPMediaPlayer, isize, isize)>> = const { RefCell::new(None) };
         // 暂停态（仅 UI 线程）：start 时复位为 false，toggle_play 翻转并据此调 Pause/Play
         static PAUSED: Cell<bool> = const { Cell::new(false) };
+        static CONTROL_STATE: Cell<ControlState> = const { Cell::new(ControlState {
+            position: 0,
+            duration: 0,
+            paused: false,
+            muted: false,
+            visible: true,
+        }) };
     }
 
     /// 播放代次：每次 start/stop 自增。异步事件携带发起时代次（dwUserData），
@@ -225,6 +296,7 @@ mod win_impl {
         rect: (i32, i32, i32, i32),
         path: &str,
         ready: Box<dyn Fn(u32, u32) + Send>,
+        controls: super::ControlCallbacks,
     ) -> bool {
         // 先停掉上一次播放（切换视频/重复打开）
         stop();
@@ -279,7 +351,24 @@ mod win_impl {
                 let _ = DestroyWindow(hwnd);
                 return false;
             }
-            ACTIVE.with(|a| *a.borrow_mut() = Some((player, hwnd.0 as isize)));
+            let controls_hwnd = create_controls_window(
+                HWND(parent as *mut core::ffi::c_void),
+                controls,
+            );
+            let Some(controls_hwnd) = controls_hwnd else {
+                let _ = player.Shutdown();
+                let _ = DestroyWindow(hwnd);
+                return false;
+            };
+            position_controls(controls_hwnd, rect);
+            ACTIVE.with(|a| *a.borrow_mut() = Some((player, hwnd.0 as isize, controls_hwnd.0 as isize)));
+            CONTROL_STATE.with(|s| s.set(ControlState {
+                position: 0,
+                duration: 0,
+                paused: false,
+                muted: false,
+                visible: true,
+            }));
         }
         true
     }
@@ -288,10 +377,11 @@ mod win_impl {
         // 代次自增：在途的异步事件全部作废
         GENERATION.fetch_add(1, Ordering::SeqCst);
         ACTIVE.with(|a| {
-            if let Some((player, hwnd)) = a.borrow_mut().take() {
+            if let Some((player, hwnd, controls_hwnd)) = a.borrow_mut().take() {
                 unsafe {
                     let _ = player.Stop();
                     let _ = player.Shutdown();
+                    let _ = DestroyWindow(HWND(controls_hwnd as *mut core::ffi::c_void));
                     let _ = DestroyWindow(HWND(hwnd as *mut core::ffi::c_void));
                 }
             }
@@ -304,7 +394,7 @@ mod win_impl {
     /// 大小渲染（表现为切换视频后首次预览比例错误、直到重开才恢复）。
     pub fn reposition(rect: (i32, i32, i32, i32)) {
         ACTIVE.with(|a| {
-            if let Some((player, hwnd)) = a.borrow().as_ref() {
+            if let Some((player, hwnd, controls_hwnd)) = a.borrow().as_ref() {
                 unsafe {
                     let _ = MoveWindow(
                         HWND(*hwnd as *mut core::ffi::c_void),
@@ -314,16 +404,369 @@ mod win_impl {
                         rect.3,
                         true,
                     );
+                    position_controls(HWND(*controls_hwnd as *mut core::ffi::c_void), rect);
                     let _ = player.UpdateVideo();
                 }
             }
         });
     }
 
+    fn control_class() -> Vec<u16> {
+        "FerroxVideoControls".encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    unsafe fn create_controls_window(
+        parent: HWND,
+        callbacks: super::ControlCallbacks,
+    ) -> Option<HWND> {
+        let class = control_class();
+        let mut wc = WNDCLASSW::default();
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = Some(control_wnd_proc);
+        wc.lpszClassName = PCWSTR(class.as_ptr());
+        let _ = RegisterClassW(&wc);
+        let state = Box::new(ControlWindowData {
+            callbacks,
+            owner: parent.0 as isize,
+            dragging: false,
+        });
+        let state_ptr = Box::into_raw(state);
+        let created = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+            PCWSTR(class.as_ptr()),
+            PCWSTR::null(),
+            WS_POPUP,
+            0,
+            0,
+            0,
+            0,
+            Some(parent),
+            None,
+            None,
+            Some(state_ptr as *const core::ffi::c_void),
+        );
+        let hwnd = match created {
+            Ok(hwnd) => hwnd,
+            Err(_) => {
+                drop(Box::from_raw(state_ptr));
+                return None;
+            }
+        };
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 205, LWA_ALPHA);
+        Some(hwnd)
+    }
+
+    unsafe extern "system" fn control_wnd_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        match msg {
+            WM_NCCREATE => {
+                let cs = &*(lparam.0 as *const CREATESTRUCTW);
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, cs.lpCreateParams as isize);
+                LRESULT(1)
+            }
+            WM_NCDESTROY => {
+                let ptr = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) as *mut ControlWindowData;
+                if !ptr.is_null() {
+                    drop(Box::from_raw(ptr));
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+            WM_PAINT => {
+                paint_controls(hwnd);
+                LRESULT(0)
+            }
+            WM_ERASEBKGND => LRESULT(1),
+            // 控制栏需要接收鼠标点击，但绝不能成为活动窗口或夺走键盘焦点。
+            // 返回 MA_NOACTIVATE 后，空格键仍由主 Slint 窗口的 FocusScope 处理。
+            WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+            WM_LBUTTONDOWN => {
+                let x = mouse_x(lparam);
+                let width = client_width(hwnd);
+                let (track_left, track_right) = track_bounds(width);
+                if x < 46 {
+                    invoke_control(hwnd, 0, 0.0);
+                } else if x < 82 {
+                    invoke_control(hwnd, 1, 0.0);
+                } else if x >= track_left && x <= track_right {
+                    set_dragging(hwnd, true);
+                    invoke_control(hwnd, 3, seek_ratio(x, track_left, track_right));
+                } else if x >= width - 52 {
+                    invoke_control(hwnd, 2, 0.0);
+                }
+                LRESULT(0)
+            }
+            WM_MOUSEMOVE => {
+                if is_dragging(hwnd) {
+                    let x = mouse_x(lparam);
+                    let (track_left, track_right) = track_bounds(client_width(hwnd));
+                    invoke_control(hwnd, 3, seek_ratio(x, track_left, track_right));
+                }
+                LRESULT(0)
+            }
+            WM_LBUTTONUP => {
+                set_dragging(hwnd, false);
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+
+    unsafe fn paint_controls(hwnd: HWND) {
+        let mut ps = PAINTSTRUCT::default();
+        let hdc = BeginPaint(hwnd, &mut ps);
+        let mut rc = RECT::default();
+        let _ = GetClientRect(hwnd, &mut rc);
+        let background = CreateSolidBrush(COLORREF(0x00302a28));
+        let _ = FillRect(hdc, &rc, background);
+        let _ = DeleteObject(background.into());
+
+        let state = CONTROL_STATE.with(|s| s.get());
+        let width = rc.right - rc.left;
+        let (track_left, track_right) = track_bounds(width);
+        // 参考样图：整体略偏上居中，48px 控制条内轨道位于 24px 基线。
+        let track_y = rc.bottom / 2;
+        let ratio = if state.duration > 0 {
+            (state.position as f32 / state.duration as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let thumb_x = track_left + ((track_right - track_left) as f32 * ratio) as i32;
+
+        let bg = CreateSolidBrush(COLORREF(0x00d6d3d1));
+        let old_bg_brush = SelectObject(hdc, bg.into());
+        let bg_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00d6d3d1));
+        let old_bg_pen = SelectObject(hdc, bg_pen.into());
+        let _ = RoundRect(hdc, track_left, track_y - 1, track_right, track_y + 2, 3, 3);
+        let _ = SelectObject(hdc, old_bg_pen);
+        let _ = DeleteObject(bg_pen.into());
+        let _ = SelectObject(hdc, old_bg_brush);
+        let _ = DeleteObject(bg.into());
+
+        let white = CreateSolidBrush(COLORREF(0x00ffffff));
+        let old_brush = SelectObject(hdc, white.into());
+        let white_track_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00ffffff));
+        let old_track_pen = SelectObject(hdc, white_track_pen.into());
+        let _ = RoundRect(hdc, track_left, track_y - 1, thumb_x, track_y + 2, 3, 3);
+        // 样图采用空心圆形滑块：白色描边、内部透出控制栏背景。
+        let _ = SelectObject(hdc, old_brush);
+        let hollow = CreateSolidBrush(COLORREF(0x00302a28));
+        let old_hollow = SelectObject(hdc, hollow.into());
+        let _ = Ellipse(hdc, thumb_x - 8, track_y - 8, thumb_x + 9, track_y + 9);
+        let _ = SelectObject(hdc, old_hollow);
+        let _ = DeleteObject(hollow.into());
+        let _ = SelectObject(hdc, old_track_pen);
+        let _ = DeleteObject(white_track_pen.into());
+        let _ = DeleteObject(white.into());
+
+        // GDI 几何线条没有抗锯齿，细线重播/音量会呈现明显锯齿。改用 Windows
+        // 自带 Segoe MDL2 Assets 媒体字形，与系统播放器同源并由字体栅格器抗锯齿。
+        let font_name: Vec<u16> = "Segoe MDL2 Assets\0".encode_utf16().collect();
+        let icon_font = CreateFontW(
+            -20,
+            0,
+            0,
+            0,
+            FW_NORMAL.0 as i32,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            ANTIALIASED_QUALITY,
+            DEFAULT_PITCH.0 as u32,
+            PCWSTR(font_name.as_ptr()),
+        );
+        let old_font = SelectObject(hdc, icon_font.into());
+        let _ = SetBkMode(hdc, TRANSPARENT);
+        let _ = SetTextColor(hdc, COLORREF(0x00ffffff));
+        draw_mdl2_icon(hdc, if state.paused { '\u{E768}' } else { '\u{E769}' }, 12, 0, 48, 48);
+        draw_mdl2_icon(hdc, '\u{E72C}', 46, 0, 40, 48);
+        draw_mdl2_icon(
+            hdc,
+            if state.muted { '\u{E74F}' } else { '\u{E767}' },
+            width - 54,
+            0,
+            48,
+            48,
+        );
+        let _ = SelectObject(hdc, old_font);
+        let _ = DeleteObject(icon_font.into());
+        let safe_pos = state.position.max(0);
+        let mut time = format!("{:02}:{:02}", safe_pos / 60, safe_pos % 60)
+            .encode_utf16()
+            .collect::<Vec<_>>();
+        let mut timer = RECT {
+            left: width - 126,
+            top: 0,
+            right: width - 58,
+            bottom: rc.bottom,
+        };
+        let _ = DrawTextW(
+            hdc,
+            &mut time,
+            &mut timer,
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+        );
+        let _ = EndPaint(hwnd, &ps);
+    }
+
+    unsafe fn draw_mdl2_icon(
+        hdc: windows::Win32::Graphics::Gdi::HDC,
+        glyph: char,
+        left: i32,
+        top: i32,
+        width: i32,
+        height: i32,
+    ) {
+        let mut text = [glyph as u16];
+        let mut rect = RECT {
+            left,
+            top,
+            right: left + width,
+            bottom: top + height,
+        };
+        let _ = DrawTextW(
+            hdc,
+            &mut text,
+            &mut rect,
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
+
+    fn control_data(hwnd: HWND) -> *mut ControlWindowData {
+        unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ControlWindowData }
+    }
+
+    fn invoke_control(hwnd: HWND, action: u8, ratio: f32) {
+        let ptr = control_data(hwnd);
+        if ptr.is_null() {
+            return;
+        }
+        unsafe {
+            match action {
+                0 => ((*ptr).callbacks.toggle_play)(),
+                1 => ((*ptr).callbacks.replay)(),
+                2 => ((*ptr).callbacks.mute)(),
+                3 => ((*ptr).callbacks.seek)(ratio),
+                _ => {}
+            }
+            // 不在这里调用 SetActiveWindow/SetFocus：WM_MOUSEACTIVATE 已保证焦点从未离开
+            // 主窗口，事后强制激活反而会让 DWM 重绘原生非客户区边框。
+        }
+    }
+
+    fn set_dragging(hwnd: HWND, dragging: bool) {
+        let ptr = control_data(hwnd);
+        if !ptr.is_null() {
+            unsafe { (*ptr).dragging = dragging; }
+        }
+    }
+
+    fn is_dragging(hwnd: HWND) -> bool {
+        let ptr = control_data(hwnd);
+        !ptr.is_null() && unsafe { (*ptr).dragging }
+    }
+
+    fn mouse_x(lparam: LPARAM) -> i32 {
+        (lparam.0 & 0xffff) as i16 as i32
+    }
+
+    fn client_width(hwnd: HWND) -> i32 {
+        unsafe {
+            let mut rc = RECT::default();
+            let _ = GetClientRect(hwnd, &mut rc);
+            (rc.right - rc.left).max(1)
+        }
+    }
+
+    fn track_bounds(width: i32) -> (i32, i32) {
+        // 参考图间距：左侧暂停/重播之后留 16px，右侧为时间与音量留足空间。
+        (96, (width - 132).max(97))
+    }
+
+    fn seek_ratio(x: i32, left: i32, right: i32) -> f32 {
+        ((x - left) as f32 / (right - left).max(1) as f32).clamp(0.0, 1.0)
+    }
+
+    fn position_controls(hwnd: HWND, rect: (i32, i32, i32, i32)) {
+        unsafe {
+            let owner = control_data(hwnd);
+            let owner_hwnd = if owner.is_null() {
+                None
+            } else {
+                Some(HWND((*owner).owner as *mut core::ffi::c_void))
+            };
+            if let Some(owner_hwnd) = owner_hwnd {
+                let mut origin = windows::Win32::Foundation::POINT {
+                    x: rect.0,
+                    y: rect.1 + rect.3 - CONTROL_H,
+                };
+                let _ = windows::Win32::Graphics::Gdi::ClientToScreen(owner_hwnd, &mut origin);
+                let _ = SetWindowPos(
+                    hwnd,
+                    Some(HWND_TOP),
+                    origin.x,
+                    origin.y,
+                    rect.2,
+                    CONTROL_H,
+                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
+            }
+        }
+    }
+
+    pub fn set_controls_visible(visible: bool) {
+        CONTROL_STATE.with(|s| {
+            let mut state = s.get();
+            state.visible = visible;
+            s.set(state);
+        });
+        ACTIVE.with(|a| {
+            if let Some((_, _, hwnd)) = a.borrow().as_ref() {
+                unsafe {
+                    let overlay = HWND(*hwnd as *mut core::ffi::c_void);
+                    let _ = ShowWindow(overlay, if visible { SW_SHOW } else { SW_HIDE });
+                }
+            }
+        });
+    }
+
+    pub fn update_controls(position: i32, duration: i32, paused: bool, muted: bool) {
+        CONTROL_STATE.with(|s| {
+            s.set(ControlState {
+                position,
+                duration,
+                paused,
+                muted,
+                visible: s.get().visible,
+            })
+        });
+        ACTIVE.with(|a| {
+            if let Some((_, _, hwnd)) = a.borrow().as_ref() {
+                unsafe {
+                    let _ = InvalidateRect(
+                        Some(HWND(*hwnd as *mut core::ffi::c_void)),
+                        None,
+                        false,
+                    );
+                }
+            }
+        });
+    }
+
+    pub fn is_paused() -> bool {
+        PAUSED.with(|p| p.get())
+    }
+
     /// 暂停 / 播放切换，返回切换后是否处于暂停态（true=已暂停）
     pub fn toggle_play() -> bool {
         ACTIVE.with(|a| {
-            if let Some((player, _)) = a.borrow().as_ref() {
+            if let Some((player, _, _)) = a.borrow().as_ref() {
                 let new_paused = !PAUSED.with(|p| p.get());
                 unsafe {
                     if new_paused {
@@ -343,7 +786,7 @@ mod win_impl {
     /// 当前播放位置与总时长（单位 100ns），未在播放返回 (0, 0)
     pub fn position() -> (i64, i64) {
         ACTIVE.with(|a| {
-            if let Some((player, _)) = a.borrow().as_ref() {
+            if let Some((player, _, _)) = a.borrow().as_ref() {
                 unsafe {
                     let cur = player
                         .GetPosition(&MFP_POSITIONTYPE_100NS)
@@ -366,7 +809,7 @@ mod win_impl {
     /// 跳转到指定 100ns 位置
     pub fn seek_100ns(pos: i64) {
         ACTIVE.with(|a| {
-            if let Some((player, _)) = a.borrow().as_ref() {
+            if let Some((player, _, _)) = a.borrow().as_ref() {
                 unsafe {
                     let mut pv = PROPVARIANT::default();
                     set_pv_i8(&mut pv, pos);
@@ -379,7 +822,7 @@ mod win_impl {
     /// 设置静音（IMFPMediaPlayer::SetMute）
     pub fn set_muted(muted: bool) {
         ACTIVE.with(|a| {
-            if let Some((player, _)) = a.borrow().as_ref() {
+            if let Some((player, _, _)) = a.borrow().as_ref() {
                 unsafe {
                     let _ = player.SetMute(muted);
                 }
@@ -390,7 +833,7 @@ mod win_impl {
     /// 当前是否静音（未在播放返回 false）
     pub fn is_muted() -> bool {
         ACTIVE.with(|a| {
-            if let Some((player, _)) = a.borrow().as_ref() {
+            if let Some((player, _, _)) = a.borrow().as_ref() {
                 unsafe { player.GetMute().unwrap_or_default().as_bool() }
             } else {
                 false

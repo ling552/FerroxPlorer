@@ -3,147 +3,8 @@ import { AppState } from "globals.slint";
 import { FileIcon } from "file_icon.slint";
 import { ScrollView } from "std-widgets.slint";
 
-// 视频播放控制条：贴合视频底边的低矮半透明横条，布局参考系统媒体播放器：
-// 暂停/播放、重播、长进度轨道、当前时间、音量。卡片与全屏两种布局共用。
-// 鼠标移动时淡入，任意位置静止 5 秒后淡出；隐藏后 Rust 将视频恢复为全幅。
-component VideoControlBar inherits Rectangle {
-    pure function fmt-secs(v: int) -> string {
-        let m: int = floor(v / 60);
-        let s: int = mod(v, 60);
-        return (m < 10 ? "0" + m : m) + ":" + (s < 10 ? "0" + s : s);
-    }
-
-    background: #342f30e8;
-    border-radius: 0px;
-    opacity: AppState.ql-controls-visible ? 1 : 0;
-    animate opacity { duration: 180ms; easing: ease-in-out; }
-    property <float> ratio: AppState.ql-video-duration > 0
-        ? clamp(AppState.ql-video-position * 1.0 / AppState.ql-video-duration, 0.0, 1.0)
-        : 0.0;
-
-    HorizontalLayout {
-        padding-left: 18px;
-        padding-right: 18px;
-        spacing: 10px;
-        alignment: center;
-
-        // 播放 / 暂停
-        Rectangle {
-            width: 30px; height: 30px;
-            border-radius: 5px;
-            background: playbtn.has-hover ? #ffffff20 : transparent;
-            Text {
-                text: AppState.ql-video-paused ? "\u{E768}" : "\u{E769}";
-                font-family: "Segoe MDL2 Assets";
-                font-size: 16px;
-                color: #f7f7f7;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-            playbtn := TouchArea {
-                mouse-cursor: pointer;
-                enabled: AppState.ql-controls-visible;
-                clicked => { AppState.ql-video-toggle-play(); }
-            }
-        }
-
-        // 重播
-        Rectangle {
-            width: 30px; height: 30px;
-            border-radius: 5px;
-            background: replaybtn.has-hover ? #ffffff20 : transparent;
-            Text {
-                text: "\u{E72C}";
-                font-family: "Segoe MDL2 Assets";
-                font-size: 17px;
-                color: #f7f7f7;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-            replaybtn := TouchArea {
-                mouse-cursor: pointer;
-                enabled: AppState.ql-controls-visible;
-                clicked => { AppState.ql-video-replay(); }
-            }
-        }
-
-        // 长进度轨道：整段均可点击和拖动
-        track := Rectangle {
-            horizontal-stretch: 1;
-            height: 26px;
-            Rectangle {
-                y: (parent.height - 2px) / 2;
-                width: parent.width;
-                height: 2px;
-                border-radius: 1px;
-                background: #ffffffb8;
-            }
-            Rectangle {
-                y: (parent.height - 2px) / 2;
-                width: parent.width * root.ratio;
-                height: 2px;
-                border-radius: 1px;
-                background: #ffffff;
-            }
-            Rectangle {
-                x: clamp(parent.width * root.ratio - 7px, 0px, parent.width - 14px);
-                y: (parent.height - 14px) / 2;
-                width: 14px; height: 14px;
-                border-radius: 7px;
-                background: #ffffff;
-                drop-shadow-blur: 3px;
-                drop-shadow-color: #00000045;
-            }
-            track-touch := TouchArea {
-                mouse-cursor: pointer;
-                enabled: AppState.ql-controls-visible;
-                property <bool> dragging: false;
-                pointer-event(ev) => {
-                    if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
-                        self.dragging = true;
-                        AppState.ql-video-seek(clamp(self.mouse-x / track.width, 0.0, 1.0));
-                    }
-                    if (ev.kind == PointerEventKind.up) {
-                        self.dragging = false;
-                    }
-                }
-                moved => {
-                    if (self.dragging) {
-                        AppState.ql-video-seek(clamp(self.mouse-x / track.width, 0.0, 1.0));
-                    }
-                }
-            }
-        }
-
-        Text {
-            text: fmt-secs(AppState.ql-video-position);
-            width: 48px;
-            font-size: 13px;
-            color: #f1f1f1;
-            horizontal-alignment: right;
-            vertical-alignment: center;
-        }
-
-        Rectangle {
-            width: 30px; height: 30px;
-            border-radius: 5px;
-            background: volbtn.has-hover ? #ffffff20 : transparent;
-            Text {
-                text: AppState.ql-video-muted ? "\u{E74F}" : "\u{E767}";
-                font-family: "Segoe MDL2 Assets";
-                font-size: 17px;
-                color: #f7f7f7;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-            volbtn := TouchArea {
-                mouse-cursor: pointer;
-                enabled: AppState.ql-controls-visible;
-                clicked => { AppState.ql-video-toggle-mute(); }
-            }
-        }
-    }
-}
+// Windows 视频预览由 Media Foundation 原生子窗口渲染；控制栏同样使用原生
+// 半透明覆盖窗，确保始终位于视频画面上方且只存在一套交互控件。
 
 // 空格键 Quick Look 预览浮层，类 macOS「快速查看」。
 // 居中卡片：顶部标题栏 + 中部按 ql-kind 切换的内容区。
@@ -438,9 +299,8 @@ export component QuickLook inherits Rectangle {
 
                 // 视频预览（ql-kind == 4）：黑底衬托；画面由 Media Foundation
                 // 子窗口覆盖渲染（含音频），本层只作背景、启动提示与底部控制条。
-                // 控制条为磨砂悬浮条：鼠标活动时淡入，静止 5 秒淡出（Rust 轮询
-                // 光标位置驱动 ql-controls-visible）。显示时 Rust 同步把视频子窗口
-                // 下沿让出控制条高度，避免原生窗口遮挡控件导致不可操作。
+                // 控制条为覆盖在画面底边的半透明悬浮条：鼠标在预览卡片内移动时显示，
+                // 静止 5 秒后隐藏。Windows 下由原生覆盖窗绘制，确保位于 MFPlay 画面之上。
                 if AppState.ql-kind == 4: Rectangle {
                     background: black;
                     Text {
@@ -451,12 +311,8 @@ export component QuickLook inherits Rectangle {
                         vertical-alignment: center;
                     }
 
-                    VideoControlBar {
-                        x: 0px;
-                        width: parent.width;
-                        y: parent.height - 44px;
-                        height: 44px;
-                    }
+                    // Windows 视频画面由原生 MFPlay 子窗口承载，控制栏也由同一个原生
+                    // 覆盖层绘制；此处不再叠加 Slint 控制栏，避免出现两套控件。
                 }
 
                 // 文件夹（3）/ 其它信息（0）：大图标衬底 + 名称 + 信息行
@@ -502,8 +358,9 @@ export component QuickLook inherits Rectangle {
                 }
             }
 
-            // 底部提示
-            Rectangle {
+            // 视频控制条直接覆盖在画面底部，不再额外占用一行提示区域。
+            // 其它预览仍保留快捷键提示。
+            if AppState.ql-kind != 4: Rectangle {
                 height: 38px;
                 background: Theme.surface;
                 Rectangle { y: 0; height: 1px; background: Theme.border; }
@@ -520,12 +377,6 @@ export component QuickLook inherits Rectangle {
         }
     }
 
-    // 视频全屏模式：卡片不渲染，控制条贴主窗口底边；全屏视频子窗口同样
-    // 按 ql-controls-visible 让出底部 44px，避免原生窗口拦截控制条输入。
-    if AppState.ql-video-fullscreen && AppState.ql-kind == 4: VideoControlBar {
-        x: 0px;
-        width: parent.width;
-        y: parent.height - 44px;
-        height: 44px;
-    }
+    // 视频控制栏始终由原生半透明覆盖窗绘制在 MFPlay 画面底边；不要在全屏时
+    // 再创建 Slint 控制栏，否则会在主窗口底边出现第二套控件。
 }

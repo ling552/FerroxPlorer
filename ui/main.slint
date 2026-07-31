@@ -305,8 +305,9 @@ export component MainWindow inherits Window {
                             }
                         }
                     }
-                    // 窗口控制按钮（贴右上角，全高）
-                    HorizontalLayout {
+                    // 视频全屏时隐藏应用自绘标题栏按钮；退出全屏后恢复。
+                    // 这样即使系统在切换全屏的一帧内短暂重建非客户区，也不会出现两组按钮。
+                    if !AppState.ql-video-fullscreen: HorizontalLayout {
                         spacing: 0px;
                         WinCtrlBtn {
                             glyph: "\u{E921}";   // 最小化
