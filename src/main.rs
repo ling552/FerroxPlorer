@@ -216,6 +216,13 @@ fn device_topology_signature() -> String {
 fn bind_device_polling(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
     std::thread::spawn(move || {
+        // 后台线程自行初始化 COM（MTA）。UI 线程由 winit 初始化为 STA，
+        // 不能在此处或 list_devices_win 中以 MTA 污染 UI 线程。
+        #[cfg(windows)]
+        {
+            use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+            unsafe { let _ = CoInitializeEx(None, COINIT_MULTITHREADED); }
+        }
         let mut last_sig = device_topology_signature();
         let _ = tx.try_send(());
         loop {

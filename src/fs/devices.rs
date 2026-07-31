@@ -139,21 +139,12 @@ fn to_wide(s: &str) -> Vec<u16> {
 fn list_devices_win() -> windows::core::Result<Vec<Entry>> {
     use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Devices::PortableDevices::{IPortableDeviceManager, PortableDeviceManager};
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER,
-        COINIT_MULTITHREADED,
-    };
+    use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER};
 
-    // 每个线程只初始化一次 COM。重复 CoInitializeEx 会递增引用计数，周期轮询时不能每轮调用。
-    thread_local! {
-        static COM_READY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    }
-    COM_READY.with(|ready| {
-        if !ready.get() {
-            unsafe { let _ = CoInitializeEx(None, COINIT_MULTITHREADED); }
-            ready.set(true);
-        }
-    });
+    // COM 由调用方所在线程负责初始化：
+    // - 后台轮询线程：在入口处 CoInitializeEx(COINIT_MULTITHREADED)
+    // - UI 线程：winit 的 OleInitialize 已将线程设为 STA
+    // 此处不再自行初始化，否则在 UI 线程上用 MTA 会与 winit 的 STA 冲突（RPC_E_CHANGED_MODE）。
     let manager: IPortableDeviceManager =
         unsafe { CoCreateInstance(&PortableDeviceManager, None, CLSCTX_INPROC_SERVER)? };
 
