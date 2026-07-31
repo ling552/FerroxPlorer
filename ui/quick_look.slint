@@ -3,6 +3,150 @@ import { AppState } from "globals.slint";
 import { FileIcon } from "file_icon.slint";
 import { ScrollView } from "std-widgets.slint";
 
+// 视频播放控制条（磨砂悬浮样式，参考 QuickTime）：播放/暂停 + 重播 +
+// 当前时间 + 可拖动进度条 + 总时长 + 音量。卡片与全屏两种布局共用。
+// 显隐由 AppState.ql-controls-visible 驱动（Rust 轮询光标：移动即显示，
+// 静止 5 秒隐藏）；隐藏时禁用交互，同时 Rust 把视频子窗口扩回全幅。
+component VideoControlBar inherits Rectangle {
+    // 把秒数格式化为 mm:ss（秒不足两位补零）
+    pure function fmt-secs(v: int) -> string {
+        let m: int = floor(v / 60);
+        let s: int = mod(v, 60);
+        return s < 10 ? m + ":0" + s : m + ":" + s;
+    }
+    border-radius: 12px;
+    background: #14161bd0;
+    border-width: 1px;
+    border-color: #ffffff14;
+    opacity: AppState.ql-controls-visible ? 1 : 0;
+    animate opacity { duration: 200ms; easing: ease-in-out; }
+    property <float> ratio: AppState.ql-video-duration > 0
+        ? clamp(AppState.ql-video-position * 1.0 / AppState.ql-video-duration, 0.0, 1.0)
+        : 0.0;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 6px;
+        alignment: center;
+        // 播放 / 暂停按钮
+        Rectangle {
+            width: 30px; height: 30px;
+            border-radius: 8px;
+            background: playbtn.has-hover ? #ffffff22 : transparent;
+            Text {
+                text: AppState.ql-video-paused ? "\u{E768}" : "\u{E769}";
+                font-family: "Segoe MDL2 Assets";
+                font-size: 13px;
+                color: white;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            playbtn := TouchArea {
+                mouse-cursor: pointer;
+                enabled: AppState.ql-controls-visible;
+                clicked => { AppState.ql-video-toggle-play(); }
+            }
+        }
+        // 重播按钮（跳回开头）
+        Rectangle {
+            width: 30px; height: 30px;
+            border-radius: 8px;
+            background: replaybtn.has-hover ? #ffffff22 : transparent;
+            Text {
+                text: "\u{E72C}";
+                font-family: "Segoe MDL2 Assets";
+                font-size: 13px;
+                color: white;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            replaybtn := TouchArea {
+                mouse-cursor: pointer;
+                enabled: AppState.ql-controls-visible;
+                clicked => { AppState.ql-video-replay(); }
+            }
+        }
+        // 当前时间
+        Text {
+            text: fmt-secs(AppState.ql-video-position);
+            font-size: Theme.fs-tiny;
+            color: #d8e0ea;
+            vertical-alignment: center;
+        }
+        // 进度轨道：可点击 / 拖动跳转
+        track := Rectangle {
+            horizontal-stretch: 1;
+            height: 18px;
+            Rectangle {
+                y: (parent.height - 4px) / 2;
+                width: parent.width;
+                height: 4px;
+                border-radius: 2px;
+                background: #ffffff38;
+            }
+            Rectangle {
+                y: (parent.height - 4px) / 2;
+                width: parent.width * root.ratio;
+                height: 4px;
+                border-radius: 2px;
+                background: white;
+            }
+            Rectangle {
+                x: clamp(parent.width * root.ratio - 6px, 0px, parent.width - 12px);
+                y: (parent.height - 12px) / 2;
+                width: 12px; height: 12px;
+                border-radius: 6px;
+                background: white;
+            }
+            track-touch := TouchArea {
+                mouse-cursor: pointer;
+                enabled: AppState.ql-controls-visible;
+                property <bool> dragging: false;
+                pointer-event(ev) => {
+                    if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
+                        self.dragging = true;
+                        AppState.ql-video-seek(self.mouse-x / track.width);
+                    }
+                    if (ev.kind == PointerEventKind.up) {
+                        self.dragging = false;
+                    }
+                }
+                moved => {
+                    if (self.dragging) {
+                        AppState.ql-video-seek(self.mouse-x / track.width);
+                    }
+                }
+            }
+        }
+        // 总时长
+        Text {
+            text: fmt-secs(AppState.ql-video-duration);
+            font-size: Theme.fs-tiny;
+            color: #d8e0ea;
+            vertical-alignment: center;
+        }
+        // 音量（静音切换）
+        Rectangle {
+            width: 30px; height: 30px;
+            border-radius: 8px;
+            background: volbtn.has-hover ? #ffffff22 : transparent;
+            Text {
+                text: AppState.ql-video-muted ? "\u{E74F}" : "\u{E767}";
+                font-family: "Segoe MDL2 Assets";
+                font-size: 13px;
+                color: white;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            volbtn := TouchArea {
+                mouse-cursor: pointer;
+                enabled: AppState.ql-controls-visible;
+                clicked => { AppState.ql-video-toggle-mute(); }
+            }
+        }
+    }
+}
+
 // 空格键 Quick Look 预览浮层，类 macOS「快速查看」。
 // 居中卡片：顶部标题栏 + 中部按 ql-kind 切换的内容区。
 // 图标优先使用条目的真实缩略图/系统图标（ql-thumb），配色随主题（含深色）。
@@ -296,8 +440,9 @@ export component QuickLook inherits Rectangle {
 
                 // 视频预览（ql-kind == 4）：黑底衬托；画面由 Media Foundation
                 // 子窗口覆盖渲染（含音频），本层只作背景、启动提示与底部控制条。
-                // 控制条占据内容区底部 44px（与 Rust 侧 QL_VIDEO_CTRL_H 一致），
-                // 原生子窗口矩形已在其上方留白，故不会被原生画面遮挡。
+                // 控制条为磨砂悬浮条：鼠标活动时淡入，静止 5 秒淡出（Rust 轮询
+                // 光标位置驱动 ql-controls-visible）。显示时 Rust 同步把视频子窗口
+                // 下沿让出控制条高度，避免原生窗口遮挡控件导致不可操作。
                 if AppState.ql-kind == 4: Rectangle {
                     background: black;
                     Text {
@@ -308,97 +453,11 @@ export component QuickLook inherits Rectangle {
                         vertical-alignment: center;
                     }
 
-                    // 底部播放控制条：播放/暂停 + 当前时间 + 可拖动进度条 + 总时长
-                    controlbar := Rectangle {
-                        y: parent.height - 44px;
-                        width: parent.width;
-                        height: 44px;
-                        background: #000000a0;
-                        property <float> ratio: AppState.ql-video-duration > 0
-                            ? clamp(AppState.ql-video-position * 1.0 / AppState.ql-video-duration, 0.0, 1.0)
-                            : 0.0;
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            spacing: 10px;
-                            alignment: center;
-                            // 播放 / 暂停按钮
-                            Rectangle {
-                                width: 28px; height: 28px;
-                                border-radius: 6px;
-                                background: playbtn.has-hover ? #ffffff22 : transparent;
-                                Text {
-                                    text: AppState.ql-video-paused ? "\u{E768}" : "\u{E769}";
-                                    font-family: "Segoe MDL2 Assets";
-                                    font-size: 13px;
-                                    color: white;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                                playbtn := TouchArea { clicked => { AppState.ql-video-toggle-play(); } }
-                            }
-                            // 当前时间
-                            Text {
-                                text: root.fmt-100ns(AppState.ql-video-position);
-                                font-size: Theme.fs-tiny;
-                                color: #d8e0ea;
-                                vertical-alignment: center;
-                            }
-                            // 进度轨道：可点击 / 拖动跳转
-                            track := Rectangle {
-                                horizontal-stretch: 1;
-                                height: 18px;
-                                // 背景轨道
-                                Rectangle {
-                                    y: (parent.height - 4px) / 2;
-                                    width: parent.width;
-                                    height: 4px;
-                                    border-radius: 2px;
-                                    background: #ffffff33;
-                                }
-                                // 已播放填充
-                                Rectangle {
-                                    y: (parent.height - 4px) / 2;
-                                    width: parent.width * controlbar.ratio;
-                                    height: 4px;
-                                    border-radius: 2px;
-                                    background: Theme.primary;
-                                }
-                                // 拖动滑块
-                                Rectangle {
-                                    x: clamp(parent.width * controlbar.ratio - 6px, 0px, parent.width - 12px);
-                                    y: (parent.height - 12px) / 2;
-                                    width: 12px; height: 12px;
-                                    border-radius: 6px;
-                                    background: white;
-                                }
-                                track-touch := TouchArea {
-                                    mouse-cursor: pointer;
-                                    property <bool> dragging: false;
-                                    pointer-event(ev) => {
-                                        if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
-                                            self.dragging = true;
-                                            AppState.ql-video-seek(self.mouse-x / track.width);
-                                        }
-                                        if (ev.kind == PointerEventKind.up) {
-                                            self.dragging = false;
-                                        }
-                                    }
-                                    moved => {
-                                        if (self.dragging) {
-                                            AppState.ql-video-seek(self.mouse-x / track.width);
-                                        }
-                                    }
-                                }
-                            }
-                            // 总时长
-                            Text {
-                                text: root.fmt-100ns(AppState.ql-video-duration);
-                                font-size: Theme.fs-tiny;
-                                color: #d8e0ea;
-                                vertical-alignment: center;
-                            }
-                        }
+                    VideoControlBar {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        y: parent.height - 44px + 2px;
+                        height: 40px;
                     }
                 }
 
@@ -461,5 +520,15 @@ export component QuickLook inherits Rectangle {
                 }
             }
         }
+    }
+
+    // 视频全屏模式：卡片不渲染，控制条直接悬浮在主窗口底部（同一磨砂样式与
+    // 显隐逻辑；全屏视频子窗口同样由 Rust 按 ql-controls-visible 让出底部高度）。
+    // 必须完全落在底部 44px 预留区内，超出部分会被原生视频子窗口遮挡。
+    if AppState.ql-video-fullscreen && AppState.ql-kind == 4: VideoControlBar {
+        x: 24px;
+        width: parent.width - 48px;
+        y: parent.height - 42px;
+        height: 40px;
     }
 }

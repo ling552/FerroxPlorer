@@ -100,6 +100,23 @@ pub fn seek_100ns(pos: i64) {
     win_impl::seek_100ns(pos);
 }
 
+/// 设置/查询静音（未在播放时设置为空操作、查询返回 false）。
+pub fn set_muted(muted: bool) {
+    #[cfg(windows)]
+    win_impl::set_muted(muted);
+}
+
+pub fn is_muted() -> bool {
+    #[cfg(windows)]
+    {
+        win_impl::is_muted()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 #[cfg(windows)]
 mod win_impl {
     use std::cell::{Cell, RefCell};
@@ -357,6 +374,28 @@ mod win_impl {
                 }
             }
         });
+    }
+
+    /// 设置静音（IMFPMediaPlayer::SetMute）
+    pub fn set_muted(muted: bool) {
+        ACTIVE.with(|a| {
+            if let Some((player, _)) = a.borrow().as_ref() {
+                unsafe {
+                    let _ = player.SetMute(muted);
+                }
+            }
+        });
+    }
+
+    /// 当前是否静音（未在播放返回 false）
+    pub fn is_muted() -> bool {
+        ACTIVE.with(|a| {
+            if let Some((player, _)) = a.borrow().as_ref() {
+                unsafe { player.GetMute().unwrap_or_default().as_bool() }
+            } else {
+                false
+            }
+        })
     }
 
     /// 从 PROPVARIANT 偏移 8 字节处读 i64（VT_I8/VT_UI8 的值；vt 在偏移 0）

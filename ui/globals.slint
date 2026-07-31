@@ -330,10 +330,18 @@ export global AppState {
     in-out property <int> ql-video-position: 0;
     in-out property <int> ql-video-duration: 0;
     in-out property <bool> ql-video-paused: false;
+    // 视频控制条可见性：鼠标活动时显示，静止数秒后隐藏（Rust 侧轮询鼠标位置驱动）
+    in-out property <bool> ql-controls-visible: true;
+    // 视频静音态（供音量按钮图标切换）
+    in-out property <bool> ql-video-muted: false;
     // 跳转到 0.0..1.0 比例位置（由进度条拖动/点击触发）
     callback ql-video-seek(float);
     // 播放 / 暂停切换
     callback ql-video-toggle-play();
+    // 重新播放（跳回开头）
+    callback ql-video-replay();
+    // 静音切换
+    callback ql-video-toggle-mute();
     // 切换渲染/源码视图（Rust 端启停 WebView2 子窗口并重算卡片尺寸）
     callback ql-set-web-mode(bool);
     // 打开当前选中项的 Quick Look 预览（由空格键触发）

@@ -4243,6 +4243,30 @@ fn bind_hash(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         }
     });
 
+    // 重新播放：跳回开头并确保处于播放态
+    let w_replay = ui.as_weak();
+    state.on_ql_video_replay(move || {
+        fs::video_preview::seek_100ns(0);
+        if let Some(ui) = w_replay.upgrade() {
+            let st = ui.global::<AppState>();
+            st.set_ql_video_position(0);
+            if st.get_ql_video_paused() {
+                let paused = fs::video_preview::toggle_play();
+                st.set_ql_video_paused(paused);
+            }
+        }
+    });
+
+    // 静音切换
+    let w_mute = ui.as_weak();
+    state.on_ql_video_toggle_mute(move || {
+        let muted = !fs::video_preview::is_muted();
+        fs::video_preview::set_muted(muted);
+        if let Some(ui) = w_mute.upgrade() {
+            ui.global::<AppState>().set_ql_video_muted(muted);
+        }
+    });
+
     // 进度条拖动 / 点击跳转：比例 0.0..1.0 → 100ns 位置
     let w = ui.as_weak();
     state.on_ql_video_seek(move |ratio| {
@@ -4308,8 +4332,13 @@ fn quicklook_content_rect_phys(ui: &MainWindow) -> Option<(i32, i32, i32, i32)> 
         if st.get_ql_kind() == 4 {
             let vw = st.get_ql_img_w().max(0) as f32;
             let vh = st.get_ql_img_h().max(0) as f32;
-            // 底部预留控制条高度：视频原生子窗口在其上方区域居中，避免遮挡 Slint 控件
-            let avail_h = (content_h - ui_bridge::QL_VIDEO_CTRL_H * scale).max(1.0);
+            // 控制条显示时底部预留其高度，视频原生子窗口在上方居中（原生窗口会遮挡
+            // Slint 控件）；控制条隐藏时视频占满整个内容区，获得更大画面。
+            let avail_h = if st.get_ql_controls_visible() {
+                (content_h - ui_bridge::QL_VIDEO_CTRL_H * scale).max(1.0)
+            } else {
+                content_h
+            };
             if vw > 0.0 && vh > 0.0 {
                 let fit = (card_w / vw).min(avail_h / vh);
                 width = vw * fit;
@@ -4374,8 +4403,12 @@ fn quicklook_fullscreen_rect_phys(ui: &MainWindow) -> Option<(i32, i32, i32, i32
         let mut y = 0.0;
         let vw = st.get_ql_img_w().max(0) as f32;
         let vh = st.get_ql_img_h().max(0) as f32;
-        // 底部预留控制条高度，视频在上方区域居中
-        let avail_h = (height - ui_bridge::QL_VIDEO_CTRL_H * scale).max(1.0);
+        // 控制条显示时底部预留其高度，隐藏时视频占满全屏
+        let avail_h = if st.get_ql_controls_visible() {
+            (height - ui_bridge::QL_VIDEO_CTRL_H * scale).max(1.0)
+        } else {
+            height
+        };
         if vw > 0.0 && vh > 0.0 {
             let fit = (width / vw).min(avail_h / vh);
             width = vw * fit;
@@ -4410,12 +4443,118 @@ fn main_hwnd(ui: &MainWindow) -> isize {
     hwnd_isize
 }
 
-/// 视频预览进度轮询定时器（UI 线程）：播放期间每 250ms 读取 MFPlay 位置刷新进度条。
-/// 句柄存于 thread_local，关闭预览时 stop 释放。
+// 视频预览进度轮询定时器（UI 线程）：播放期间每 250ms 读取 MFPlay 位置刷新进度条。
+// 句柄存于 thread_local，关闭预览时 stop 释放。
 thread_local! {
     static VIDEO_TIMER: std::cell::RefCell<Option<slint::Timer>> =
         const { std::cell::RefCell::new(None) };
+    /// 控制条自动隐藏所需的鼠标活动跟踪：上次光标位置（屏幕物理像素）与最后活动时间。
+    static MOUSE_LAST_POS: std::cell::Cell<(i32, i32)> =
+        const { std::cell::Cell::new((i32::MIN, i32::MIN)) };
+    static MOUSE_LAST_ACTIVE: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
 }
+
+/// 控制条区域（物理像素，主窗口客户区坐标）：卡片/全屏两种布局下内容区底部
+/// QL_VIDEO_CTRL_H 高度的横条。用于鼠标悬停控制条时不触发自动隐藏。
+#[cfg(windows)]
+fn controls_rect_phys(ui: &MainWindow) -> Option<(i32, i32, i32, i32)> {
+    let mut out = None;
+    let st = ui.global::<AppState>();
+    ui.window().with_winit_window(|w| {
+        let scale = w.scale_factor() as f32;
+        let size = w.inner_size();
+        let ctrl_h = ui_bridge::QL_VIDEO_CTRL_H * scale;
+        if st.get_ql_video_fullscreen() {
+            out = Some((0, (size.height as f32 - ctrl_h) as i32, size.width as i32, ctrl_h as i32));
+        } else {
+            let card_w = st.get_ql_card_w() * scale;
+            let card_h = st.get_ql_card_h() * scale;
+            let card_x = (size.width as f32 - card_w) / 2.0;
+            let card_y = (size.height as f32 - card_h) / 2.0;
+            let y = card_y + card_h - ui_bridge::QL_FOOTER_H * scale - ctrl_h;
+            out = Some((card_x as i32, y as i32, card_w as i32, ctrl_h as i32));
+        }
+    });
+    out
+}
+
+/// 判断屏幕坐标点是否落在控制条区域内。
+#[cfg(windows)]
+fn cursor_over_controls(ui: &MainWindow, sx: i32, sy: i32) -> bool {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+    let hwnd = main_hwnd(ui);
+    if hwnd == 0 {
+        return false;
+    }
+    let mut pt = POINT { x: sx, y: sy };
+    if unsafe { ScreenToClient(hwnd as *mut core::ffi::c_void, &mut pt) } == 0 {
+        return false;
+    }
+    controls_rect_phys(ui)
+        .map(|(x, y, w, h)| pt.x >= x && pt.x < x + w && pt.y >= y && pt.y < y + h)
+        .unwrap_or(false)
+}
+
+/// 控制条显隐变化后按当前布局重新对齐视频子窗口（显示时让出底部，隐藏时占满）。
+#[cfg(windows)]
+fn reposition_video_now(ui: &MainWindow) {
+    let st = ui.global::<AppState>();
+    if !st.get_quicklook_open() || st.get_ql_kind() != 4 {
+        return;
+    }
+    let rect = if st.get_ql_video_fullscreen() {
+        quicklook_fullscreen_rect_phys(ui)
+    } else {
+        quicklook_content_rect_phys(ui)
+    };
+    if let Some(rect) = rect {
+        fs::video_preview::reposition(rect);
+    }
+}
+
+/// 视频轮询中的鼠标活动检测：光标移动即显示控制条，静止 5 秒且不在控制条上则隐藏。
+/// 视频画面由原生 MF 子窗口渲染，Slint 收不到其上方的鼠标移动，必须在 UI 线程
+/// 轮询 GetCursorPos 实现（250ms 一次，开销可忽略）。
+#[cfg(windows)]
+fn poll_video_controls_visibility(ui: &MainWindow) {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    let st = ui.global::<AppState>();
+    if !st.get_quicklook_open() || st.get_ql_kind() != 4 {
+        return;
+    }
+    let mut pt = POINT { x: 0, y: 0 };
+    if unsafe { GetCursorPos(&mut pt) } == 0 {
+        return;
+    }
+    let now = std::time::Instant::now();
+    let last = MOUSE_LAST_POS.with(|p| p.replace((pt.x, pt.y)));
+    if last != (pt.x, pt.y) {
+        MOUSE_LAST_ACTIVE.with(|t| t.set(Some(now)));
+        if !st.get_ql_controls_visible() {
+            st.set_ql_controls_visible(true);
+            reposition_video_now(ui);
+        }
+        return;
+    }
+    if !st.get_ql_controls_visible() {
+        return;
+    }
+    let idle = MOUSE_LAST_ACTIVE
+        .with(|t| t.get())
+        .map(|t0| now.duration_since(t0))
+        .unwrap_or_default();
+    if idle >= std::time::Duration::from_secs(5) && !cursor_over_controls(ui, pt.x, pt.y) {
+        st.set_ql_controls_visible(false);
+        reposition_video_now(ui);
+    }
+}
+
+#[cfg(not(windows))]
+fn poll_video_controls_visibility(_ui: &MainWindow) {}
 
 fn start_video_timer(ui: &MainWindow) {
     let weak = ui.as_weak();
@@ -4432,6 +4571,8 @@ fn start_video_timer(ui: &MainWindow) {
                 if dur > 0 {
                     st.set_ql_video_duration((dur / 10_000_000) as i32);
                 }
+                // 鼠标活动 → 显示控制条；静止 5 秒 → 隐藏
+                poll_video_controls_visibility(&ui);
             }
         },
     );
@@ -4476,6 +4617,11 @@ fn start_video_preview(ui: &MainWindow, path: &str) {
         st.set_ql_video_position(0);
         st.set_ql_video_duration(0);
         st.set_ql_video_paused(false);
+        st.set_ql_video_muted(false);
+        // 打开预览时控制条默认显示，并重置鼠标活动计时（5 秒无操作后自动隐藏）
+        st.set_ql_controls_visible(true);
+        MOUSE_LAST_POS.with(|p| p.set((i32::MIN, i32::MIN)));
+        MOUSE_LAST_ACTIVE.with(|t| t.set(Some(std::time::Instant::now())));
         start_video_timer(ui);
     }
 }
@@ -4984,10 +5130,10 @@ fn apply_acrylic_blur_behind(ui: &MainWindow, translucent: bool, blur_level: f32
     });
 }
 
-/// 剥离 WS_SYSMENU 以消除 DWM 自绘的 Windows 11 原生标题栏按钮（最小化/最大化/关闭），
-/// 避免与本程序自绘按钮重叠成「两套」。保留 WS_MINIMIZEBOX | WS_MAXIMIZEBOX 不动——
-/// 故 Aero Snap（贴边/Win+方向）与任务栏最小化动画仍正常；自绘按钮走 winit 的
-/// set_minimized/set_maximized/hide，不依赖 WS_SYSMENU，功能不受影响。
+/// 剥离 WS_CAPTION 与 WS_SYSMENU，以消除 DWM 自绘的 Windows 11 原生标题栏按钮
+/// （最小化/最大化/关闭），避免与本程序自绘按钮重叠成「两套」。保留
+/// WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME 不动，因此 Aero Snap、任务栏
+/// 最小化动画和原生边缘缩放仍可用；自绘按钮走 winit，不依赖 WS_SYSMENU。
 ///
 /// 需在任何会重算非客户区的操作之后调用：启用亚克力（延伸边框）、以及最大化/还原切换
 /// （winit set_maximized 会触发 FRAMECHANGED，使原生按钮重现）。
@@ -4997,7 +5143,7 @@ fn strip_native_caption_buttons(ui: &MainWindow) {
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED,
-        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_SYSMENU,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CAPTION, WS_SYSMENU,
     };
 
     ui.window().with_winit_window(|winit_window| {
@@ -5008,7 +5154,7 @@ fn strip_native_caption_buttons(ui: &MainWindow) {
             let hwnd = isize::from(h.hwnd) as HWND;
             unsafe {
                 let mut style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-                style &= !(WS_SYSMENU as isize);
+                style &= !((WS_CAPTION | WS_SYSMENU) as isize);
                 SetWindowLongPtrW(hwnd, GWL_STYLE, style);
                 // 通知系统样式变更并重算非客户区，使原生按钮立即消失
                 SetWindowPos(
@@ -5140,6 +5286,8 @@ unsafe extern "system" fn hit_test_wndproc(
 }
 
 /// 为窗口安装边缘 resize 窗口过程（替换原 WNDPROC，仅一次）。
+/// 标题栏样式由 strip_native_caption_buttons() 统一、幂等移除；这里仅负责钩子，
+/// 避免把窗口样式刷新绑定到“首次安装”条件，导致最大化或 DWM 重算后按钮重现。
 #[cfg(windows)]
 fn install_native_resize(ui: &MainWindow) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};

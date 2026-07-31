@@ -152,7 +152,7 @@ export component MainWindow inherits Window {
 
             // 标题栏：品牌图标 + 标签页 + 窗口控制按钮（无边框，三按钮同行）
             Rectangle {
-                height: 48px;
+                height: 40px;
                 background: Theme.shell.with-alpha(Theme.panel-alpha);
                 Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
 
@@ -174,8 +174,8 @@ export component MainWindow inherits Window {
                     Rectangle { width: 8px; }
                     // 品牌图标（显示 icon.png；双击最大化；拖动由底层标题栏拖动层统一处理）
                     Rectangle {
-                        width: 34px; height: 34px;
-                        y: (parent.height - 34px)/2;
+                        width: 26px; height: 26px;
+                        y: (parent.height - 26px)/2;
                         border-radius: 8px;
                         background: @linear-gradient(135deg, #0078d4, #35b8ff);
                         drop-shadow-blur: 10px;
@@ -204,8 +204,8 @@ export component MainWindow inherits Window {
                         alignment: start;
                         // 渲染全部标签页（点击切换 / 拖动重排 / 关闭）
                         for tab[i] in AppState.tabs: Rectangle {
-                            y: (parent.height - 40px)/2;
-                            height: 40px;
+                            y: (parent.height - 30px)/2;
+                            height: 30px;
                             width: 184px;
                             border-radius: 10px;
                             background: tab.active
@@ -288,9 +288,9 @@ export component MainWindow inherits Window {
                         }
                         // 新建标签按钮
                         new-tab := Rectangle {
-                            y: (parent.height - 32px)/2;
-                            width: 32px; height: 32px;
-                            border-radius: 8px;
+                            y: (parent.height - 26px)/2;
+                            width: 26px; height: 26px;
+                            border-radius: 7px;
                             background: nt.has-hover ? Theme.primary-hover : transparent;
                             nt := TouchArea {
                                 mouse-cursor: pointer;
@@ -364,17 +364,17 @@ export component MainWindow inherits Window {
                                     request-context-menu(idx, mx, my) => {
                                         if (AppState.set-context-menu-system) {
                                             if (idx >= 0) {
-                                                AppState.show-system-menu(idx, mx + AppState.sidebar-w + 7px, my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h);
+                                                AppState.show-system-menu(idx, mx + AppState.sidebar-w + 7px, my + 40px + Theme.toolbar-h + 1px + Theme.actionbar-h);
                                             } else {
                                                 // 空白处：活动面板目录的系统背景菜单
-                                                AppState.show-system-background-menu(mx + AppState.sidebar-w + 7px, my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h);
+                                                AppState.show-system-background-menu(mx + AppState.sidebar-w + 7px, my + 40px + Theme.toolbar-h + 1px + Theme.actionbar-h);
                                             }
                                         } else {
                                         // 自定义右键菜单：target 属性按活动面板取对应 entries
                                         ctxmenu.is-background = idx < 0;
                                         ctxmenu.target-index = idx;
                                         ctxmenu.menu-x = mx + AppState.sidebar-w + 7px;
-                                        ctxmenu.menu-y = my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h;
+                                        ctxmenu.menu-y = my + 40px + Theme.toolbar-h + 1px + Theme.actionbar-h;
                                         if (AppState.active-pane == "right") {
                                             ctxmenu.target-is-dir = idx >= 0 ? AppState.r-entries[idx].is-dir : false;
                                             ctxmenu.target-important = idx >= 0 ? AppState.r-entries[idx].tag-important : false;
@@ -397,10 +397,10 @@ export component MainWindow inherits Window {
                                         ThisPcView {
                                             request-context-menu(idx, mx, my) => {
                                                 if (idx >= 0) {
-                                                    AppState.show-system-menu(idx, mx + AppState.sidebar-w + 7px + 6px, my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h + 6px);
+                                                    AppState.show-system-menu(idx, mx + AppState.sidebar-w + 7px + 6px, my + 40px + Theme.toolbar-h + 1px + Theme.actionbar-h + 6px);
                                                 } else {
                                                     // 空白处：虚拟目录无 Shell 背景菜单，Rust 侧静默忽略
-                                                    AppState.show-system-background-menu(mx + AppState.sidebar-w + 7px + 6px, my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h + 6px);
+                                                    AppState.show-system-background-menu(mx + AppState.sidebar-w + 7px + 6px, my + 40px + Theme.toolbar-h + 1px + Theme.actionbar-h + 6px);
                                                 }
                                             }
                                         }
@@ -413,17 +413,17 @@ export component MainWindow inherits Window {
                                             request-context-menu(idx, mx, my) => {
                                                 if (AppState.set-context-menu-system) {
                                                     if (idx >= 0) {
-                                                        AppState.show-system-menu(idx, mx + AppState.sidebar-w + 7px + 6px, my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h + 6px);
+                                                        AppState.show-system-menu(idx, mx + AppState.sidebar-w + 7px + 6px, my + 40px + Theme.toolbar-h + 1px + Theme.actionbar-h + 6px);
                                                     } else {
                                                         // 空白处：系统目录背景菜单（查看/排序/新建/粘贴等）
-                                                        AppState.show-system-background-menu(mx + AppState.sidebar-w + 7px + 6px, my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h + 6px);
+                                                        AppState.show-system-background-menu(mx + AppState.sidebar-w + 7px + 6px, my + 40px + Theme.toolbar-h + 1px + Theme.actionbar-h + 6px);
                                                     }
                                                 } else {
                                                     // idx<0 为空白处右键→背景菜单；选中/清除已由 InputOverlay 处理
                                                     ctxmenu.is-background = idx < 0;
                                                     ctxmenu.target-index = idx;
                                                     ctxmenu.menu-x = mx + AppState.sidebar-w + 7px + 6px;
-                                                    ctxmenu.menu-y = my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h + 6px;
+                                                    ctxmenu.menu-y = my + 40px + Theme.toolbar-h + 1px + Theme.actionbar-h + 6px;
                                                     ctxmenu.target-is-dir = idx >= 0 ? AppState.entries[idx].is-dir : false;
                                                     ctxmenu.target-important = idx >= 0 ? AppState.entries[idx].tag-important : false;
                                                     ctxmenu.target-archive = idx >= 0 ? AppState.entries[idx].tag-archive : false;
@@ -442,17 +442,17 @@ export component MainWindow inherits Window {
                                                 if (AppState.set-context-menu-system) {
                                                     if (idx >= 0) {
                                                         // 40px = 内边距 6px + 表头行高 34px
-                                                        AppState.show-system-menu(idx, mx + AppState.sidebar-w + 7px + 6px, my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h + 40px);
+                                                        AppState.show-system-menu(idx, mx + AppState.sidebar-w + 7px + 6px, my + 40px + Theme.toolbar-h + 1px + Theme.actionbar-h + 40px);
                                                     } else {
                                                         // 空白处：系统目录背景菜单（查看/排序/新建/粘贴等）
-                                                        AppState.show-system-background-menu(mx + AppState.sidebar-w + 7px + 6px, my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h + 40px);
+                                                        AppState.show-system-background-menu(mx + AppState.sidebar-w + 7px + 6px, my + 40px + Theme.toolbar-h + 1px + Theme.actionbar-h + 40px);
                                                     }
                                                 } else {
                                                     // idx<0 为空白处右键→背景菜单；选中/清除已由 InputOverlay 处理
                                                     ctxmenu.is-background = idx < 0;
                                                     ctxmenu.target-index = idx;
                                                     ctxmenu.menu-x = mx + AppState.sidebar-w + 7px + 6px;
-                                                    ctxmenu.menu-y = my + 48px + Theme.toolbar-h + 1px + Theme.actionbar-h + 40px;
+                                                    ctxmenu.menu-y = my + 40px + Theme.toolbar-h + 1px + Theme.actionbar-h + 40px;
                                                     ctxmenu.target-is-dir = idx >= 0 ? AppState.entries[idx].is-dir : false;
                                                     ctxmenu.target-important = idx >= 0 ? AppState.entries[idx].tag-important : false;
                                                     ctxmenu.target-archive = idx >= 0 ? AppState.entries[idx].tag-archive : false;
