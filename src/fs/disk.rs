@@ -1,6 +1,34 @@
 //! 磁盘信息：枚举驱动器并查询容量（Windows 真实查询）
 
 use super::metadata::Entry;
+use std::sync::{Mutex, OnceLock};
+
+fn disk_cache() -> &'static Mutex<Vec<DiskInfo>> {
+    static CACHE: OnceLock<Mutex<Vec<DiskInfo>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// 返回最近一次后台/显式枚举得到的磁盘快照，不访问任何盘符。
+pub fn cached_disks() -> Vec<DiskInfo> {
+    disk_cache().lock().map(|v| v.clone()).unwrap_or_default()
+}
+
+/// 从缓存快照查询单个盘符，不触发设备访问；交互热路径（选中/状态栏）专用。
+pub fn cached_disk_info_of(letter: char) -> Option<DiskInfo> {
+    let letter = letter.to_ascii_uppercase().to_string();
+    disk_cache()
+        .lock()
+        .ok()?
+        .iter()
+        .find(|d| d.letter.eq_ignore_ascii_case(&letter))
+        .cloned()
+}
+
+fn replace_cache(disks: &[DiskInfo]) {
+    if let Ok(mut cache) = disk_cache().lock() {
+        *cache = disks.to_vec();
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DriveKind {
@@ -63,10 +91,9 @@ pub fn disk_entries() -> Vec<Entry> {
     list_disks().into_iter().map(|d| d.to_entry()).collect()
 }
 
-/// 查询单个盘符的驱动器信息（类型/容量/卷标）。
-/// 状态栏每次刷新只需要当前路径所在的盘：避免全盘枚举时被休眠硬盘、
-/// 失联网络驱动器或无碟光驱的容量/卷标查询阻塞。
+/// 查询单个盘符的驱动器信息（类型/容量/卷标）。保留给非交互后台任务使用。
 #[cfg(windows)]
+#[allow(dead_code)]
 pub fn disk_info_of(letter: char) -> Option<DiskInfo> {
     let letter = letter.to_ascii_uppercase();
     if !letter.is_ascii_alphabetic() {
@@ -76,6 +103,7 @@ pub fn disk_info_of(letter: char) -> Option<DiskInfo> {
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)]
 pub fn disk_info_of(_letter: char) -> Option<DiskInfo> {
     None
 }
@@ -95,6 +123,7 @@ pub fn list_disks() -> Vec<DiskInfo> {
             disks.push(d);
         }
     }
+    replace_cache(&disks);
     disks
 }
 
@@ -125,9 +154,8 @@ fn query_disk(letter: char) -> Option<DiskInfo> {
     let mut free_avail: u64 = 0;
     let mut total: u64 = 0;
     let mut total_free: u64 = 0;
-    let ok = unsafe {
-        GetDiskFreeSpaceExW(wide.as_ptr(), &mut free_avail, &mut total, &mut total_free)
-    };
+    let ok =
+        unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free_avail, &mut total, &mut total_free) };
     if ok == 0 {
         free_avail = 0;
         total = 0;

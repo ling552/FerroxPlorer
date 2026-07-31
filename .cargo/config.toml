@@ -1,0 +1,4 @@
+# Windows MSVC 默认动态依赖 Visual C++ Runtime。静态链接 CRT 后，安装包可在未安装
+# Rust/Cargo/VC++ Redistributable 的干净 Windows x64 电脑上直接运行。
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

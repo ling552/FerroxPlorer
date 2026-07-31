@@ -299,8 +299,8 @@ mod tests {
     fn test_kind_of() {
         assert_eq!(kind_of(Path::new("a.png"), false), PreviewKind::Image);
         assert_eq!(kind_of(Path::new("a.rs"), false), PreviewKind::Text);
-        // 非图片/视频/归档文件统一兜底为文本预览（二进制内容由 read_text_head 检测提示）
-        assert_eq!(kind_of(Path::new("a.bin"), false), PreviewKind::Text);
+        // 已知二进制/磁盘映像显示基础信息，避免把任意二进制内容当文本读取。
+        assert_eq!(kind_of(Path::new("a.bin"), false), PreviewKind::Info);
         assert_eq!(kind_of(Path::new("a.zip"), false), PreviewKind::Archive);
         assert_eq!(kind_of(Path::new("a.7z"), false), PreviewKind::Archive);
         assert_eq!(kind_of(Path::new("anything"), true), PreviewKind::Folder);

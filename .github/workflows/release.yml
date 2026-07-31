@@ -36,8 +36,30 @@ jobs:
       - name: 缓存依赖
         uses: Swatinem/rust-cache@v2
 
+      - name: 运行测试
+        run: cargo test --locked --all-targets
+
       - name: 构建 Release 二进制
-        run: cargo build --release
+        run: cargo build --locked --release
+
+      - name: 验证自包含运行时依赖
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -property installationPath
+          $dumpbin = Get-ChildItem "$vsPath\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $dumpbin) {
+            throw "未找到 Visual Studio dumpbin.exe，无法验证运行时依赖"
+          }
+          $imports = & $dumpbin /dependents target\release\ferroxplorer.exe | Out-String
+          $forbidden = @("VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "MSVCP140.dll", "ucrtbase.dll")
+          $found = $forbidden | Where-Object { $imports -match [regex]::Escape($_) }
+          if ($found) {
+            throw "Release 二进制仍依赖未随安装包分发的 VC Runtime: $($found -join ', ')"
+          }
+          Write-Host "已确认 MSVC CRT 静态链接，无 VC Runtime 外部依赖。"
 
       - name: 打包 Windows 安装程序(Inno Setup)
         shell: pwsh

@@ -28,6 +28,21 @@ static MSC_CACHE: std::sync::Mutex<
 static NAME_CACHE: std::sync::Mutex<Option<std::collections::HashMap<String, String>>> =
     std::sync::Mutex::new(None);
 
+/// 最近一次完整枚举得到的设备快照。侧边栏重建只读此缓存，避免导航时同步访问 WPD。
+#[cfg(windows)]
+static DEVICE_CACHE: std::sync::Mutex<Vec<Entry>> = std::sync::Mutex::new(Vec::new());
+
+pub fn cached_devices() -> Vec<Entry> {
+    #[cfg(windows)]
+    {
+        DEVICE_CACHE.lock().map(|v| v.clone()).unwrap_or_default()
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
 /// 查询设备友好名（最近一次枚举的缓存）。未知设备返回 None。
 pub fn friendly_name(device_id: &str) -> Option<String> {
     #[cfg(windows)]
@@ -124,8 +139,21 @@ fn to_wide(s: &str) -> Vec<u16> {
 fn list_devices_win() -> windows::core::Result<Vec<Entry>> {
     use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Devices::PortableDevices::{IPortableDeviceManager, PortableDeviceManager};
-    use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER,
+        COINIT_MULTITHREADED,
+    };
 
+    // 每个线程只初始化一次 COM。重复 CoInitializeEx 会递增引用计数，周期轮询时不能每轮调用。
+    thread_local! {
+        static COM_READY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    COM_READY.with(|ready| {
+        if !ready.get() {
+            unsafe { let _ = CoInitializeEx(None, COINIT_MULTITHREADED); }
+            ready.set(true);
+        }
+    });
     let manager: IPortableDeviceManager =
         unsafe { CoCreateInstance(&PortableDeviceManager, None, CLSCTX_INPROC_SERVER)? };
 
@@ -200,6 +228,9 @@ fn list_devices_win() -> windows::core::Result<Vec<Entry>> {
         });
     }
 
+    if let Ok(mut cache) = DEVICE_CACHE.lock() {
+        *cache = entries.clone();
+    }
     Ok(entries)
 }
 

@@ -40,11 +40,9 @@ impl ThumbSide {
     }
 }
 
-/// 缩略图请求的方形边长。网格视图 58px 在 icon-scale=2.0 下达 116px，128 已勉强够用，
-/// 但很多真实缩略图/图标源分辨率本就充裕，提到 256（对齐 SHIL_JUMBO 上限与开发文档
-/// "128px/256px" 规格）能让放大后仍保持清晰，只有系统本身只注册 32/48px 图标的极少数
-/// 文件类型仍会因源分辨率不足而模糊——这是 Windows Shell 自身限制，应用层无法解决。
-const THUMB_SIZE: u32 = 256;
+/// 缩略图请求边长。网格最大显示约 116px，128px 足够覆盖并将每张 RGBA 缓存
+/// 从 256KiB 降至 64KiB，显著减少浏览图片/视频目录后的常驻内存。
+const THUMB_SIZE: u32 = 128;
 
 /// 判断扩展名是否为图片或视频（内置图标模式下仍为这两类显示真实缩略图）
 fn is_media(path: &str) -> bool {
@@ -614,7 +612,7 @@ pub fn update_status(ui: &MainWindow, core: &AppCore) {
     let mut disk_part = String::new();
     if let Some(letter) = cur.to_string_lossy().chars().next() {
         if letter.is_ascii_alphabetic() {
-            if let Some(d) = disk::disk_info_of(letter) {
+            if let Some(d) = disk::cached_disk_info_of(letter) {
                 disk_part = format!(" · {} 剩余 {}", d.name, metadata::human_size(d.free));
             }
         }
@@ -717,24 +715,16 @@ pub fn update_selection_pane(ui: &MainWindow, core: &AppCore, right: bool) {
                 .into(),
             );
             state.set_sel_modified(metadata::fmt_ts_full(e.modified_ts).into());
-            // 创建时间：条目模型未缓存，按需对单个文件读取一次
-            let created = std::fs::metadata(&e.path)
-                .ok()
-                .and_then(|m| m.created().ok())
-                .map(metadata::full_time)
-                .unwrap_or_else(|| "—".to_string());
-            state.set_sel_created(created.into());
-            // 「打开方式」默认程序名（仅文件；文件夹/无关联留空，UI 据此隐藏该行）
-            let open_with = if e.is_dir {
-                String::new()
-            } else {
-                crate::fs::openwith::default_app_name(Path::new(&e.path)).unwrap_or_default()
-            };
-            state.set_sel_open_with(open_with.into());
-            // 安全页：所有者 + 属性摘要 + 只读标志
-            fill_security(&state, Path::new(&e.path));
-            // 数字签名页
-            fill_signature(&state, Path::new(&e.path), e.is_dir);
+            // 慢属性只在打开「属性」对话框时惰性读取，普通单击不访问磁盘/ACL/注册表。
+            state.set_sel_created("—".into());
+            state.set_sel_open_with(SharedString::new());
+            state.set_sel_owner("—".into());
+            state.set_sel_attributes("普通".into());
+            state.set_sel_readonly(false);
+            state.set_sel_acl_entries(ModelRc::new(VecModel::from(Vec::<AclAce>::new())));
+            state.set_sel_sign_status(0);
+            state.set_sel_sign_detail(SharedString::new());
+            state.set_sel_cert_chain(ModelRc::new(VecModel::from(Vec::<CertInfo>::new())));
             state.set_sel_icon_label(e.icon_label.clone().into());
             state.set_sel_icon_class(e.icon_class.clone().into());
             // 从对应面板的条目模型读取该行已生成的缩略图/系统图标位图，填充右侧详情预览
@@ -947,7 +937,7 @@ pub fn build_sidebar(
     });
     if !section_collapsed {
         // 驱动器：用真实容量构建带使用率进度条的磁盘条目
-        for disk in crate::fs::disk::list_disks() {
+        for disk in crate::fs::disk::cached_disks() {
             let ratio = disk.used_ratio();
             // 与资源管理器一致的副标题："X 可用，共 Y"
             let info = if disk.total > 0 {
@@ -990,7 +980,7 @@ pub fn build_sidebar(
             });
         }
         // 便携设备（手机 / 平板等）：同步显示在"此电脑"下
-        for dev in crate::fs::devices::list_devices() {
+        for dev in crate::fs::devices::cached_devices() {
             let (device_thumb, device_has_thumb) = if system_icons {
                 match crate::fs::thumbnail::load_cached_request(
                     &crate::fs::thumbnail::IconRequest::Device,
@@ -1114,7 +1104,7 @@ pub fn build_sidebar(
             }
             item
         };
-        let recycle_stock = match crate::fs::recyclebin::is_empty() {
+        let recycle_stock = match crate::fs::recyclebin::cached_is_empty() {
             Some(false) => crate::fs::thumbnail::StockIcon::RecyclerFull,
             _ => crate::fs::thumbnail::StockIcon::RecyclerEmpty,
         };
@@ -1184,6 +1174,24 @@ pub fn verify_result(path: &Path, expected: &str) -> (SharedString, i32) {
         Ok((algo, false)) => (format!("不匹配（已按 {} 比对）", algo).into(), 2),
         Err(e) => (format!("校验失败：{}", e).into(), 3),
     }
+}
+
+/// 惰性填充属性对话框需要的文件系统、注册表、安全与签名字段。
+pub fn fill_properties(state: &AppState, path: &Path, is_dir: bool) {
+    let created = std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.created().ok())
+        .map(metadata::full_time)
+        .unwrap_or_else(|| "—".to_string());
+    state.set_sel_created(created.into());
+    let open_with = if is_dir {
+        String::new()
+    } else {
+        crate::fs::openwith::default_app_name(path).unwrap_or_default()
+    };
+    state.set_sel_open_with(open_with.into());
+    fill_security(state, path);
+    fill_signature(state, path, is_dir);
 }
 
 /// 填充属性「安全」页：所有者 + 属性摘要 + 只读标志。

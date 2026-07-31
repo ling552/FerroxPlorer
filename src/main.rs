@@ -192,8 +192,8 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.run()
 }
 
-/// 计算"设备 + 驱动器"拓扑签名：用于轮询时判断是否发生插拔/挂载变化。
-/// 仅纳入设备虚拟路径集合与驱动器盘符/总容量（不含可用空间，避免写盘时频繁误刷）。
+/// 计算"设备 + 驱动器"拓扑签名。WPD、卷标/容量和回收站 API 可能被慢设备
+/// 阻塞，必须只在后台线程调用。
 fn device_topology_signature() -> String {
     let mut sig = String::new();
     for dev in fs::devices::list_devices() {
@@ -207,35 +207,41 @@ fn device_topology_signature() -> String {
         sig.push_str(&d.total.to_string());
         sig.push(';');
     }
-    // 回收站空/满状态：变化时侧边栏图标需跟随切换（空→满 / 清空）
     sig.push('|');
-    sig.push(if fs::recyclebin::is_empty().unwrap_or(true) {
-        '0'
-    } else {
-        '1'
-    });
+    sig.push(if fs::recyclebin::is_empty().unwrap_or(true) { '0' } else { '1' });
     sig
 }
 
-/// 启动 ~1.5s 周期定时器轮询设备/驱动器拓扑；仅在签名变化时刷新，避免无谓重绘。
+/// 后台轮询设备/驱动器拓扑，UI 定时器只做非阻塞 `try_recv`。
 fn bind_device_polling(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
+    std::thread::spawn(move || {
+        let mut last_sig = device_topology_signature();
+        let _ = tx.try_send(());
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            let sig = device_topology_signature();
+            if sig != last_sig {
+                last_sig = sig;
+                match tx.try_send(()) {
+                    Ok(()) | Err(std::sync::mpsc::TrySendError::Full(())) => {}
+                    Err(std::sync::mpsc::TrySendError::Disconnected(())) => break,
+                }
+            }
+        }
+    });
+
     let timer = Box::leak(Box::new(slint::Timer::default()));
     let w = ui.as_weak();
     let c = core.clone();
-    // 初始签名：以启动时拓扑为基线，首次变化才触发刷新
-    let last_sig = Rc::new(RefCell::new(device_topology_signature()));
     timer.start(
         slint::TimerMode::Repeated,
-        std::time::Duration::from_millis(1500),
+        std::time::Duration::from_millis(250),
         move || {
-            let Some(ui) = w.upgrade() else { return };
-            let sig = device_topology_signature();
-            if *last_sig.borrow() == sig {
+            if rx.try_recv().is_err() {
                 return;
             }
-            *last_sig.borrow_mut() = sig;
-
-            // 重建侧边栏（当前活动标签路径用于高亮）
+            let Some(ui) = w.upgrade() else { return };
             let path = c.borrow().active_tab().history.current().clone();
             {
                 let cc = c.borrow();
@@ -246,11 +252,9 @@ fn bind_device_polling(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                         &cc.config,
                     ));
             }
-            // 若当前正浏览"此电脑"，重新加载条目以反映新增/移除的驱动器与设备
             if path.to_string_lossy() == fs::virtualfs::THIS_PC_PATH {
                 load_current(&ui, &c);
             }
-            // 右面板若也在"此电脑"，同步刷新
             let r_at_this_pc = c.borrow().right_pane.history.current().to_string_lossy()
                 == fs::virtualfs::THIS_PC_PATH;
             if r_at_this_pc {
@@ -2815,20 +2819,17 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                 }
             }
             ui_bridge::update_selection_pane(&ui, &c.borrow(), right);
-            // 详细信息页：解析当前选中项扩展元数据（打开对话框时一次性填充）
+            // 慢属性仅在用户明确打开对话框时读取，不拖慢普通选中操作。
             {
                 let core = c.borrow();
                 let tab = core.pane(right);
-                if let Some(p) =
-                    tab.selected
-                        .iter()
-                        .enumerate()
-                        .find(|(_, &s)| s)
-                        .and_then(|(fi, _)| {
-                            tab.filtered.get(fi).map(|&ei| tab.entries[ei].path.clone())
-                        })
+                if let Some(entry) = tab.selected.iter().enumerate()
+                    .find(|(_, &s)| s).and_then(|(fi, _)| tab.entry_at(fi))
                 {
-                    ui_bridge::fill_details(&ui.global::<AppState>(), Path::new(&p));
+                    let path = Path::new(&entry.path);
+                    let state = ui.global::<AppState>();
+                    ui_bridge::fill_properties(&state, path, entry.is_dir);
+                    ui_bridge::fill_details(&state, path);
                 }
             }
             let st = ui.global::<AppState>();

@@ -197,7 +197,9 @@ pub fn load_cached_request(request: &IconRequest, size: u32) -> Option<Arc<IconP
         }
         Kind::Path(k) => {
             if let Ok(mut c) = path_cache().lock() {
-                if c.len() > 500 {
+                // 128px RGBA 图标约 64 KiB；限制具体路径缓存规模，避免浏览大量
+                // 图片/视频后常驻内存持续增长。类型图标仍由独立缓存共享。
+                if c.len() >= 256 {
                     c.clear();
                 }
                 c.insert(k, arc.clone());

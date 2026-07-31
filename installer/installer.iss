@@ -1,7 +1,7 @@
 ; FerroxPlorer Windows 安装程序脚本(Inno Setup 6)
 ; CI 中通过 /DAppVersion=x.y.z 传入版本号;本地手动编译时使用下方默认值
 #ifndef AppVersion
-  #define AppVersion "0.4.5"
+  #define AppVersion "0.4.6"
 #endif
 
 [Setup]
@@ -22,6 +22,8 @@ Compression=lzma2
 SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+; Windows 10/11 x64：应用使用系统内置 API/WebView2；VC Runtime 已由 Cargo 静态链接。
+MinVersion=10.0.17763
 WizardStyle=modern
 ; 安装程序自身图标由根目录 icon.png 生成，需与应用图标同步更新
 SetupIconFile=icon.ico

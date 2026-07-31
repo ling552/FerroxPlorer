@@ -2,6 +2,18 @@
 //! 本期实现：浏览 + 打开 + 还原。
 
 use super::metadata::Entry;
+use std::sync::atomic::{AtomicI8, Ordering};
+
+// -1=未知，0=非空，1=空。实际 Shell 查询更新缓存，侧边栏热路径只读原子值。
+static EMPTY_CACHE: AtomicI8 = AtomicI8::new(-1);
+
+pub fn cached_is_empty() -> Option<bool> {
+    match EMPTY_CACHE.load(Ordering::Relaxed) {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    }
+}
 
 /// 回收站是否为空（侧栏图标据此显示空/满状态）。查询失败返回 None。
 pub fn is_empty() -> Option<bool> {
@@ -14,7 +26,9 @@ pub fn is_empty() -> Option<bool> {
         };
         // 空路径 = 查询所有驱动器回收站合计
         unsafe { SHQueryRecycleBinW(windows::core::PCWSTR::null(), &mut info).ok()? };
-        Some(info.i64NumItems == 0)
+        let empty = info.i64NumItems == 0;
+        EMPTY_CACHE.store(if empty { 1 } else { 0 }, Ordering::Relaxed);
+        Some(empty)
     }
     #[cfg(not(windows))]
     {
