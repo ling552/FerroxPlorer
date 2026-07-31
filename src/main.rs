@@ -3016,6 +3016,12 @@ fn bind_context_menu_ext(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                     .map(|e| (e.is_dir, e.path.clone()))
             };
             if let Some((is_dir, path)) = target {
+                // 标签栏已满时拒绝在新标签页打开，避免挤出窗口按钮
+                if tabs_full(&ui, &c) {
+                    ui.global::<AppState>()
+                        .set_status_text("标签栏已满，请先关闭部分标签页".into());
+                    return;
+                }
                 let dir = if is_dir {
                     PathBuf::from(&path)
                 } else {
@@ -3370,6 +3376,12 @@ fn show_sidebar_menu(ui: &MainWindow, core: &Rc<RefCell<AppCore>>, path: &str, m
     match command {
         Some(SidebarCommand::Open) => navigate_to(ui, core, PathBuf::from(path)),
         Some(SidebarCommand::OpenNewTab) => {
+            // 标签栏已满时拒绝，避免挤出窗口按钮
+            if tabs_full(ui, core) {
+                ui.global::<AppState>()
+                    .set_status_text("标签栏已满，请先关闭部分标签页".into());
+                return;
+            }
             core.borrow_mut().new_tab(PathBuf::from(path));
             load_current(ui, core);
         }
@@ -4740,6 +4752,29 @@ fn show_open_with_dialog(_ui: &MainWindow, _path: &str) {}
 
 // ─── 标签页 ───
 
+/// 标签栏是否已满：按当前窗口逻辑宽度与标签数，复用 Slint `tabs-full` 同公式判断
+/// 「再放一个最小宽度(72px)标签页」是否会挤出窗口按钮。供 Rust 各新建入口（右键
+/// 「在新标签页打开」/侧栏新标签页/on_new_tab）在新增前守卫，与 Slint 端「+」按钮
+/// 隐藏 / Ctrl+T 拦截保持一致；新增时取实时窗口宽度，故无需监听 resize。
+fn tabs_full(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) -> bool {
+    let n = core.borrow().tabs.len();
+    if n == 0 {
+        return false;
+    }
+    let size = ui.window().size(); // 物理像素
+    let scale = ui.window().scale_factor();
+    let win_w = if scale > 0.0 {
+        size.width as f32 / scale
+    } else {
+        size.width as f32
+    };
+    // 可用宽度 = 窗口宽 − 左留白8 − 品牌图标26 − 窗口按钮3×46=138
+    let avail = win_w - 172.0;
+    // 所需 = (N+1) 个最小宽度标签(72) + (N+1) 个间距(4) + 左内边距8 + 新建按钮26
+    let need = (n + 1) as f32 * 76.0 + 34.0;
+    need > avail
+}
+
 fn bind_tabs(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     let state = ui.global::<AppState>();
 
@@ -4748,6 +4783,12 @@ fn bind_tabs(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     let c = core.clone();
     state.on_new_tab(move || {
         if let Some(ui) = w.upgrade() {
+            // 标签栏已满（剩余宽度不足以再放一个最小宽度标签）：拒绝新增并提示
+            if tabs_full(&ui, &c) {
+                ui.global::<AppState>()
+                    .set_status_text("标签栏已满，请先关闭部分标签页".into());
+                return;
+            }
             let start = {
                 let core = c.borrow();
                 match core.config.settings.new_tab_location.as_str() {
@@ -4812,6 +4853,13 @@ fn bind_tabs(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     let c = core.clone();
     state.on_open_settings_tab(move || {
         if let Some(ui) = w.upgrade() {
+            // 已存在设置页则直接切换（不新增）；否则标签栏已满时拒绝新建
+            let has_settings = c.borrow().tabs.iter().any(|t| t.kind == app::TabKind::Settings);
+            if !has_settings && tabs_full(&ui, &c) {
+                ui.global::<AppState>()
+                    .set_status_text("标签栏已满，请先关闭部分标签页".into());
+                return;
+            }
             c.borrow_mut().open_settings_tab();
             load_current(&ui, &c);
         }

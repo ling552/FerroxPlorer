@@ -193,16 +193,19 @@ component TagButton inherits Rectangle {
                 spacing: 0px;
                 TagMenuRow {
                     on: AppState.sel-tag-important;
+                    dot-color: #d13438;
                     label: "标记为 · 重要";
                     clicked => { AppState.tag-selected("important"); popup.close(); }
                 }
                 TagMenuRow {
                     on: AppState.sel-tag-archive;
+                    dot-color: #ff8c00;
                     label: "标记为 · 待归档";
                     clicked => { AppState.tag-selected("archive"); popup.close(); }
                 }
                 TagMenuRow {
                     on: AppState.sel-tag-done;
+                    dot-color: #107c10;
                     label: "标记为 · 已完成";
                     clicked => { AppState.tag-selected("done"); popup.close(); }
                 }
