@@ -1661,7 +1661,11 @@ pub fn fill_quicklook(ui: &MainWindow, core: &AppCore, right: bool) -> bool {
             state.set_ql_text(listing.into());
         }
         PreviewKind::Folder => {
-            let (dirs, files, fsize) = preview::folder_summary(path);
+            let (dirs, files, fsize) = preview::folder_summary(
+                path,
+                core.config.settings.show_hidden,
+                core.config.settings.show_protected,
+            );
             state.set_ql_subtitle("文件夹".into());
             state.set_ql_info(
                 format!(

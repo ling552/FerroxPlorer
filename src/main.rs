@@ -152,6 +152,9 @@ fn main() -> Result<(), slint::PlatformError> {
         restore_window_geometry(&ui, x, y, w, h, maximized, 20);
     }
 
+    // 启动目录优先使用其已保存布局；未记录目录才使用全局默认视图。
+    apply_folder_layout(&ui, &core);
+
     // 启动时推送已保存的网络位置列表（设置「云存储账号」页展示）
     ui_bridge::push_network_locations(&ui, &core.borrow());
     // 启动时推送自定义标签定义（工具栏「标记」下拉与侧栏同步）
@@ -212,9 +215,40 @@ fn device_topology_signature() -> String {
     sig
 }
 
-/// 后台轮询设备/驱动器拓扑，UI 定时器只做非阻塞 `try_recv`。
+/// 后台轮询设备/驱动器拓扑，变化时经事件循环回主线程刷新。
+///
+/// 不用 UI 定时器轮询：定时器需事件循环已在运行才会被排程，而本绑定发生在
+/// `ui.run()` 之前——首次枚举的结果会一直等到用户点击（产生输入事件唤醒事件
+/// 循环）才被取走，表现为「刚打开时手机不显示，随便点一下才出来」。
+/// 改由后台线程用 `upgrade_in_event_loop` 主动唤醒事件循环并回调，
+/// 首次枚举一完成就立刻刷新。
 fn bind_device_polling(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
-    let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
+    // 处理器在主线程，可安全捕获 Rc<RefCell<AppCore>>
+    let w = ui.as_weak();
+    let c = core.clone();
+    ui.global::<AppState>().on_devices_changed(move || {
+        let Some(ui) = w.upgrade() else { return };
+        let path = c.borrow().active_tab().history.current().clone();
+        {
+            let cc = c.borrow();
+            ui.global::<AppState>()
+                .set_nav_items(ui_bridge::build_sidebar(
+                    &path,
+                    &cc.collapsed_sections,
+                    &cc.config,
+                ));
+        }
+        if path.to_string_lossy() == fs::virtualfs::THIS_PC_PATH {
+            load_current(&ui, &c);
+        }
+        let r_at_this_pc = c.borrow().right_pane.history.current().to_string_lossy()
+            == fs::virtualfs::THIS_PC_PATH;
+        if r_at_this_pc {
+            load_right(&ui, &c);
+        }
+    });
+
+    let w = ui.as_weak();
     std::thread::spawn(move || {
         // 后台线程自行初始化 COM（MTA）。UI 线程由 winit 初始化为 STA，
         // 不能在此处或 list_devices_win 中以 MTA 污染 UI 线程。
@@ -223,52 +257,27 @@ fn bind_device_polling(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
             unsafe { let _ = CoInitializeEx(None, COINIT_MULTITHREADED); }
         }
+        let notify = |w: &slint::Weak<MainWindow>| {
+            w.upgrade_in_event_loop(|ui| ui.global::<AppState>().invoke_devices_changed())
+        };
+        // 首次枚举：DEVICE_CACHE 此前为空，侧边栏与「此电脑」都还没有设备条目，
+        // 无论签名如何都要推一次
         let mut last_sig = device_topology_signature();
-        let _ = tx.try_send(());
+        if notify(&w).is_err() {
+            return;
+        }
         loop {
             std::thread::sleep(std::time::Duration::from_secs(5));
             let sig = device_topology_signature();
             if sig != last_sig {
                 last_sig = sig;
-                match tx.try_send(()) {
-                    Ok(()) | Err(std::sync::mpsc::TrySendError::Full(())) => {}
-                    Err(std::sync::mpsc::TrySendError::Disconnected(())) => break,
+                // 窗口已销毁：事件循环不复存在，退出轮询线程
+                if notify(&w).is_err() {
+                    break;
                 }
             }
         }
     });
-
-    let timer = Box::leak(Box::new(slint::Timer::default()));
-    let w = ui.as_weak();
-    let c = core.clone();
-    timer.start(
-        slint::TimerMode::Repeated,
-        std::time::Duration::from_millis(250),
-        move || {
-            if rx.try_recv().is_err() {
-                return;
-            }
-            let Some(ui) = w.upgrade() else { return };
-            let path = c.borrow().active_tab().history.current().clone();
-            {
-                let cc = c.borrow();
-                ui.global::<AppState>()
-                    .set_nav_items(ui_bridge::build_sidebar(
-                        &path,
-                        &cc.collapsed_sections,
-                        &cc.config,
-                    ));
-            }
-            if path.to_string_lossy() == fs::virtualfs::THIS_PC_PATH {
-                load_current(&ui, &c);
-            }
-            let r_at_this_pc = c.borrow().right_pane.history.current().to_string_lossy()
-                == fs::virtualfs::THIS_PC_PATH;
-            if r_at_this_pc {
-                load_right(&ui, &c);
-            }
-        },
-    );
 }
 
 /// 绑定应用更新：关于页的 GitHub 链接、检查更新、带进度下载与安装启动。
@@ -811,14 +820,15 @@ fn load_current(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     }
 
     // 提前取出设置项，避免 match 表达式中的临时借用与内部 borrow_mut 冲突
-    let (show_hidden, folders_first) = {
+    let (show_hidden, show_protected, folders_first) = {
         let c = core.borrow();
         (
             c.config.settings.show_hidden,
+            c.config.settings.show_protected,
             c.config.settings.folders_first,
         )
     };
-    match ops::read_dir(&path, show_hidden) {
+    match ops::read_dir(&path, show_hidden, show_protected) {
         Ok(entries) => {
             let mut c = core.borrow_mut();
             let tab = c.active_tab_mut();
@@ -864,14 +874,15 @@ fn reload_current_soft(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         return;
     }
 
-    let (show_hidden, folders_first) = {
+    let (show_hidden, show_protected, folders_first) = {
         let c = core.borrow();
         (
             c.config.settings.show_hidden,
+            c.config.settings.show_protected,
             c.config.settings.folders_first,
         )
     };
-    let entries = match ops::read_dir(&path, show_hidden) {
+    let entries = match ops::read_dir(&path, show_hidden, show_protected) {
         Ok(e) => e,
         Err(_) => return, // 目录已被删除/移动等：留待用户主动导航，不打断当前视图
     };
@@ -1421,6 +1432,12 @@ fn start_next_job(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                 // 冲突重命名（" (2)"）的项索引会略有偏差，由 search 的 metadata 校验兜底，待下次全量重建修正。
                 if bg_index && !result.cancelled {
                     for src in &job_srcs {
+                        // 便携设备路径不纳入本地文件名索引（索引只覆盖本地文件系统）
+                        if fs::devices::is_device_path(&src.to_string_lossy())
+                            || fs::devices::is_device_path(&job_dst.to_string_lossy())
+                        {
+                            continue;
+                        }
                         let Some(name) = src.file_name() else { continue };
                         let dest = job_dst.join(name);
                         match job_kind {
@@ -1476,6 +1493,39 @@ fn enqueue_compress(ui: &MainWindow, c: &Rc<RefCell<AppCore>>, idx: i32, fmt: &s
 }
 
 /// 在指定面板执行行内重命名提交并刷新该面板（记录撤销）
+/// 在设备目录下为 `base` 找一个不重名的名称（「新建文件夹」/「新建文件夹 (2)」）。
+/// 设备侧无文件系统，用 devices::child_named 查重。
+fn unique_device_name(parent_vpath: &str, base: &str) -> String {
+    if fs::devices::child_named(parent_vpath, base).is_none() {
+        return base.to_string();
+    }
+    let (stem, ext) = match base.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{}", e)),
+        _ => (base.to_string(), String::new()),
+    };
+    for n in 2..1000 {
+        let candidate = format!("{} ({}){}", stem, n, ext);
+        if fs::devices::child_named(parent_vpath, &candidate).is_none() {
+            return candidate;
+        }
+    }
+    for n in 1000..10_000 {
+        let candidate = format!("{} (副本 {}){}", stem, n, ext);
+        if fs::devices::child_named(parent_vpath, &candidate).is_none() {
+            return candidate;
+        }
+    }
+    let prefix = format!("{} (副本 {})", stem, std::process::id());
+    for n in 1..10_000 {
+        let candidate = format!("{}{}{}", prefix, if n == 1 { String::new() } else { format!(" ({})", n) }, ext);
+        if fs::devices::child_named(parent_vpath, &candidate).is_none() {
+            return candidate;
+        }
+    }
+    // 设备目录极端拥挤时仍返回一个基于进程 ID 的名称；上面的查重覆盖正常范围。
+    format!("{} (副本 {}){}", stem, std::process::id(), ext)
+}
+
 fn rename_in_pane(
     ui: &MainWindow,
     c: &Rc<RefCell<AppCore>>,
@@ -1494,10 +1544,34 @@ fn rename_in_pane(
     let unchanged = trimmed.is_empty()
         || old
             .as_ref()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy() == trimmed)
+            .and_then(|p| {
+                let s = p.to_string_lossy();
+                if fs::devices::is_device_path(&s) {
+                    fs::devices::object_info(&s).map(|(name, _, _)| name == trimmed)
+                } else {
+                    p.file_name().map(|n| n.to_string_lossy() == trimmed)
+                }
+            })
             .unwrap_or(true);
     if let Some(old) = old {
+        // 便携设备对象：std::fs 不可用，改走 WPD 重命名
+        let old_str = old.to_string_lossy().to_string();
+        if !trimmed.is_empty() && !unchanged && fs::devices::is_device_path(&old_str) {
+            match fs::devices::rename(&old_str, new_name) {
+                Ok(()) => {}
+                Err(e) => {
+                    ui.global::<AppState>()
+                        .set_status_text(format!("重命名失败：{}", e).into());
+                }
+            }
+            ui.invoke_clear_editing();
+            if right {
+                load_right(ui, c);
+            } else {
+                load_current(ui, c);
+            }
+            return;
+        }
         if !trimmed.is_empty() && !unchanged {
             match ops::rename(&old, new_name) {
                 Ok(new_path) => {
@@ -1606,6 +1680,66 @@ fn schedule_pane_reloads_for(
     }
 }
 
+fn default_folder_layout(settings: &config::Settings) -> (&'static str, bool) {
+    match settings.default_view.as_str() {
+        "grid" => ("grid", settings.dual_pane_default),
+        "dual" => ("list", true),
+        _ => ("list", settings.dual_pane_default),
+    }
+}
+
+fn folder_layout_for(config: &config::AppConfig, path: &Path) -> (&'static str, bool) {
+    match config.folder_layout_normalized(&path.to_string_lossy()) {
+        Some("grid") => ("grid", false),
+        Some("dual-list") => ("list", true),
+        Some("dual-grid") => ("grid", true),
+        Some("list") => ("list", false),
+        _ => default_folder_layout(&config.settings),
+    }
+}
+
+/// 应用当前目录已保存的视图。双面板状态属于左侧活动目录；右面板仅共享其子视图。
+fn apply_folder_layout(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
+    if core.borrow().active_tab().kind != app::TabKind::Files {
+        return;
+    }
+    let (mode, dual) = {
+        let c = core.borrow();
+        folder_layout_for(&c.config, c.active_tab().history.current())
+    };
+    let st = ui.global::<AppState>();
+    st.set_view_mode(mode.into());
+    st.set_dual_pane(dual);
+    if dual {
+        load_right(ui, core);
+    } else {
+        ui.invoke_clear_editing();
+    }
+}
+
+fn save_current_folder_layout(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
+    if core.borrow().active_tab().kind != app::TabKind::Files {
+        return;
+    }
+    let st = ui.global::<AppState>();
+    let mode = match (st.get_dual_pane(), st.get_view_mode().as_str()) {
+        (true, "grid") => "dual-grid",
+        (true, _) => "dual-list",
+        (false, "grid") => "grid",
+        _ => "list",
+    };
+    let path = core
+        .borrow()
+        .active_tab()
+        .history
+        .current()
+        .to_string_lossy()
+        .to_string();
+    let mut c = core.borrow_mut();
+    c.config.set_folder_layout(&path, mode);
+    c.config.save();
+}
+
 /// 在当前活跃标签页跳转到指定路径（支持虚拟路径 tag:// recycle:// network://）
 fn navigate_to(ui: &MainWindow, core: &Rc<RefCell<AppCore>>, target: PathBuf) {
     let target_str = target.to_string_lossy().to_string();
@@ -1613,6 +1747,7 @@ fn navigate_to(ui: &MainWindow, core: &Rc<RefCell<AppCore>>, target: PathBuf) {
         return;
     }
     core.borrow_mut().active_tab_mut().history.navigate(target);
+    apply_folder_layout(ui, core);
     load_current(ui, core);
 }
 
@@ -1635,14 +1770,15 @@ fn load_right(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     } else {
         path
     };
-    let (show_hidden, folders_first) = {
+    let (show_hidden, show_protected, folders_first) = {
         let c = core.borrow();
         (
             c.config.settings.show_hidden,
+            c.config.settings.show_protected,
             c.config.settings.folders_first,
         )
     };
-    match ops::read_dir(&path, show_hidden) {
+    match ops::read_dir(&path, show_hidden, show_protected) {
         Ok(entries) => {
             let mut c = core.borrow_mut();
             let t = &mut c.right_pane;
@@ -2104,6 +2240,7 @@ fn bind_navigation(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             } else {
                 let moved = c.borrow_mut().active_tab_mut().history.go_back().is_some();
                 if moved {
+                    apply_folder_layout(&ui, &c);
                     load_current(&ui, &c);
                 }
             }
@@ -2127,6 +2264,7 @@ fn bind_navigation(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                     .go_forward()
                     .is_some();
                 if moved {
+                    apply_folder_layout(&ui, &c);
                     load_current(&ui, &c);
                 }
             }
@@ -2401,9 +2539,18 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                 core.clipboard.clone()
             };
             let has_clips = !paths.is_empty();
-            // 同步写入系统剪贴板（CF_HDROP）：跨文件夹/盘/标签及资源管理器互通
+            // 同步写入系统剪贴板（CF_HDROP）：跨文件夹/盘/标签及资源管理器互通。
+            // 便携设备路径（device://）非真实文件系统路径，写入系统剪贴板对资源管理器
+            // 无意义且会污染其粘贴行为，故仅写入应用内部剪贴板。
             if has_clips {
-                fs::clipboard::set_files(&paths, false);
+                let local_paths: Vec<_> = paths
+                    .iter()
+                    .filter(|p| !fs::devices::is_device_path(&p.to_string_lossy()))
+                    .cloned()
+                    .collect();
+                if !local_paths.is_empty() {
+                    fs::clipboard::set_files(&local_paths, false);
+                }
             }
             ui.global::<AppState>().set_can_paste(has_clips);
         }
@@ -2426,7 +2573,14 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             };
             let has_clips = !paths.is_empty();
             if has_clips {
-                fs::clipboard::set_files(&paths, true);
+                let local_paths: Vec<_> = paths
+                    .iter()
+                    .filter(|p| !fs::devices::is_device_path(&p.to_string_lossy()))
+                    .cloned()
+                    .collect();
+                if !local_paths.is_empty() {
+                    fs::clipboard::set_files(&local_paths, true);
+                }
             }
             ui.global::<AppState>().set_can_paste(has_clips);
         }
@@ -2447,7 +2601,15 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                 } else {
                     core.active_tab().history.current().clone()
                 };
-                if let Some((sys_paths, sys_cut)) = fs::clipboard::get_files() {
+                let internal_has_device = core
+                    .clipboard
+                    .iter()
+                    .any(|p| fs::devices::is_device_path(&p.to_string_lossy()));
+                if internal_has_device && core.clip_mode != ClipMode::None {
+                    // 设备路径无法进入 CF_HDROP；混合复制时系统剪贴板只含本地子集，
+                    // 此时必须优先内部剪贴板，不能漏掉设备项。
+                    (core.clipboard.clone(), core.clip_mode == ClipMode::Cut, dst)
+                } else if let Some((sys_paths, sys_cut)) = fs::clipboard::get_files() {
                     (sys_paths, sys_cut, dst)
                 } else if core.clip_mode != ClipMode::None && !core.clipboard.is_empty() {
                     (core.clipboard.clone(), core.clip_mode == ClipMode::Cut, dst)
@@ -2467,8 +2629,13 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             };
             {
                 let mut core = c.borrow_mut();
-                // 剪切=移动：乐观记录撤销（源→目标，撤销时移回）。假定无同名冲突重命名。
-                if is_cut {
+                // 剪切=移动：仅本地文件系统任务记录传统路径撤销；设备操作不可经 std::fs 撤销。
+                if is_cut
+                    && !clips
+                        .iter()
+                        .any(|p| fs::devices::is_device_path(&p.to_string_lossy()))
+                    && !fs::devices::is_device_path(&dst.to_string_lossy())
+                {
                     let pairs: Vec<(PathBuf, PathBuf)> = clips
                         .iter()
                         .filter_map(|src| src.file_name().map(|n| (src.clone(), dst.join(n))))
@@ -2516,8 +2683,11 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                 };
                 (srcs, dst)
             };
-            // 源为空或目标非真实目录（虚拟路径等）时忽略
-            if srcs.is_empty() || !dst.is_dir() {
+            // 源为空或目标非可写入目录时忽略。
+            // 便携设备目录（device://）不是真实文件系统路径，is_dir() 为 false，
+            // 但它是合法的写入目标，需单独放行。
+            let dst_ok = dst.is_dir() || fs::devices::is_device_path(&dst.to_string_lossy());
+            if srcs.is_empty() || !dst_ok {
                 return;
             }
             let kind = if ctrl {
@@ -2605,8 +2775,35 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             if paths.is_empty() {
                 return;
             }
+            // 便携设备对象不能进入回收站，和本地对象分组分别处理。
+            // 混合选择时不能把本地路径传给 WPD，也不能漏掉本地项目。
+            let device_paths: Vec<String> = paths
+                .iter()
+                .filter(|p| fs::devices::is_device_path(&p.to_string_lossy()))
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
+            let device_msg = if device_paths.is_empty() {
+                None
+            } else {
+                Some(match fs::devices::delete(&device_paths) {
+                    Ok(()) => format!("已从设备删除 {} 个项目", device_paths.len()),
+                    Err(e) => format!("设备删除失败：{}", e),
+                })
+            };
+            let paths: Vec<PathBuf> = paths
+                .into_iter()
+                .filter(|p| !fs::devices::is_device_path(&p.to_string_lossy()))
+                .collect();
             let n = paths.len();
-            // 移入回收站（可还原），与资源管理器一致
+            if paths.is_empty() {
+                if let Some(msg) = device_msg {
+                    reload_active_pane(&ui, &c);
+                    schedule_pane_reloads(&ui, &c, &[600, 2000]);
+                    ui.global::<AppState>().set_status_text(msg.into());
+                }
+                return;
+            }
+            // 本地项目移入回收站（可还原），与资源管理器一致
             let msg = match fs::recyclebin::move_to_recycle_bin(&paths) {
                 Ok(_) => {
                     // SHFileOperation 偶尔对受保护文件返回成功但实际未删除（静默失败）：
@@ -2654,6 +2851,10 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                     }
                 }
             };
+            let msg = match device_msg {
+                Some(device_msg) => format!("{}；{}", device_msg, msg),
+                None => msg,
+            };
             reload_active_pane(&ui, &c);
             // 大文件夹的回收站移动由 Shell 异步收尾，立即 reload 可能仍读到旧目录项；
             // 延迟补刷两次，确保被删条目从视图消失（无需用户手动刷新）
@@ -2686,6 +2887,23 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         if let Some(ui) = w.upgrade() {
             let right = toolbar_routes_right(&ui);
             let dst = c.borrow().pane(right).history.current().clone();
+            // 便携设备目录：std::fs 不可用，改走 WPD 新建
+            let dst_str = dst.to_string_lossy().to_string();
+            if fs::devices::is_device_path(&dst_str) {
+                let name = unique_device_name(&dst_str, "新建文件夹");
+                match fs::devices::create_folder(&dst_str, &name) {
+                    Ok(_) => {
+                        ui.global::<AppState>()
+                            .set_status_text("已在设备上新建文件夹".into());
+                    }
+                    Err(e) => {
+                        ui.global::<AppState>()
+                            .set_status_text(format!("新建失败：{}", e).into());
+                    }
+                }
+                reload_active_pane(&ui, &c);
+                return;
+            }
             match ops::new_folder(&dst, "新建文件夹") {
                 Ok(path) => {
                     c.borrow_mut().record_undo(app::UndoAction::Create { path: path.clone() });
@@ -2723,6 +2941,23 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         if let Some(ui) = w.upgrade() {
             let right = toolbar_routes_right(&ui);
             let dst = c.borrow().pane(right).history.current().clone();
+            // 便携设备目录：std::fs 不可用，改走 WPD 新建
+            let dst_str = dst.to_string_lossy().to_string();
+            if fs::devices::is_device_path(&dst_str) {
+                let name = unique_device_name(&dst_str, "新建文本文档.txt");
+                match fs::devices::create_file(&dst_str, &name) {
+                    Ok(_) => {
+                        ui.global::<AppState>()
+                            .set_status_text("已在设备上新建文件".into());
+                    }
+                    Err(e) => {
+                        ui.global::<AppState>()
+                            .set_status_text(format!("新建失败：{}", e).into());
+                    }
+                }
+                reload_active_pane(&ui, &c);
+                return;
+            }
             match ops::new_file(&dst, "新建文本文档.txt") {
                 Ok(path) => {
                     c.borrow_mut().record_undo(app::UndoAction::Create { path: path.clone() });
@@ -2808,6 +3043,12 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         }
     });
 
+    // 「选中后单击重命名」防抖：单击已选中项先挂起，延迟提交。
+    // 双击（打开）会在延迟窗口内调用 cancel-click-rename 取消挂起，
+    // 从而避免双击打开时先闪一下重命名输入框（单击与双击在 pointer-up 阶段无法区分，
+    // 必须延迟到能判定「没有第二次点击」时再进入重命名）。
+    bind_click_rename(ui, core);
+
     // 打开属性（数据源按活动面板：右面板活动时显示右面板选中项）
     let w = ui.as_weak();
     let c = core.clone();
@@ -2876,6 +3117,67 @@ fn shell_new_icon_class(ext: &str) -> (String, String) {
 }
 
 // ─── "新增"菜单：枚举系统注册表 ShellNew 项，下拉选择后创建并进入重命名 ───
+
+/// 「选中后单击重命名」防抖定时器绑定（见 input_overlay.slint 的 request-click-rename）。
+fn bind_click_rename(ui: &MainWindow, _core: &Rc<RefCell<AppCore>>) {
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    // 单次挂起重命名的代次：每次请求/取消都自增，旧定时器回调比对代次判定是否过期。
+    let gen = Rc::new(Cell::new(0u64));
+    let pending: Rc<RefCell<Option<(String, i32)>>> = Rc::new(RefCell::new(None));
+    // 复用单个 SingleShot 定时器：新请求会重置计时，旧回调自然作废
+    let timer = Rc::new(slint::Timer::default());
+
+    let state = ui.global::<AppState>();
+    let g = gen.clone();
+    let p = pending.clone();
+    let t = timer.clone();
+    let w = ui.as_weak();
+    state.on_request_click_rename(move |pane, idx| {
+        let ng = g.get().wrapping_add(1);
+        g.set(ng);
+        *p.borrow_mut() = Some((pane.to_string(), idx));
+        let p2 = p.clone();
+        let g2 = g.clone();
+        let w2 = w.clone();
+        // 使用 Windows 当前双击时间，避免固定延迟在用户自定义双击速度下误判。
+        // 略加 20ms 让 Slint 的 double-clicked 回调有机会先取消挂起请求。
+        #[cfg(windows)]
+        let delay_ms = unsafe {
+            windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() as u64 + 20
+        };
+        #[cfg(not(windows))]
+        let delay_ms = 520;
+        t.start(
+            slint::TimerMode::SingleShot,
+            Duration::from_millis(delay_ms),
+            move || {
+                // 代次不匹配=已被取消或被更新的请求取代
+                if g2.get() != ng {
+                    return;
+                }
+                if let Some((pane, idx)) = p2.borrow_mut().take() {
+                    if let Some(ui) = w2.upgrade() {
+                        if pane == "right" {
+                            ui.invoke_set_editing_right(idx);
+                        } else {
+                            ui.invoke_set_editing(idx);
+                        }
+                    }
+                }
+            },
+        );
+    });
+
+    let state = ui.global::<AppState>();
+    let g = gen.clone();
+    let p = pending.clone();
+    state.on_cancel_click_rename(move || {
+        g.set(g.get().wrapping_add(1));
+        *p.borrow_mut() = None;
+    });
+}
 
 fn bind_new_menu(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     let state = ui.global::<AppState>();
@@ -3721,7 +4023,10 @@ fn bind_settings(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                         reload = true;
                     }
                     "show-ext" => s.show_extensions = val,
-                    "show-protected" => s.show_protected = val,
+                    "show-protected" => {
+                        s.show_protected = val;
+                        reload = true;
+                    }
                     "calc-size" => s.calc_folder_size = val,
                     "folders-first" => {
                         s.folders_first = val;
@@ -3948,9 +4253,11 @@ fn bind_view_and_search(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     let state = ui.global::<AppState>();
 
     let w = ui.as_weak();
+    let c = core.clone();
     state.on_set_view(move |mode| {
         if let Some(ui) = w.upgrade() {
             ui.global::<AppState>().set_view_mode(mode);
+            save_current_folder_layout(&ui, &c);
         }
     });
 
@@ -3962,6 +4269,7 @@ fn bind_view_and_search(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             let st = ui.global::<AppState>();
             let on = !st.get_dual_pane();
             st.set_dual_pane(on);
+            save_current_folder_layout(&ui, &c);
             if on {
                 load_right(&ui, &c);
             } else {
@@ -4415,24 +4723,11 @@ fn schedule_video_repositions(ui: &MainWindow, delays_ms: &[u64]) {
 #[cfg(windows)]
 fn quicklook_fullscreen_rect_phys(ui: &MainWindow) -> Option<(i32, i32, i32, i32)> {
     let mut out = None;
-    let st = ui.global::<AppState>();
     ui.window().with_winit_window(|window| {
         let size = window.inner_size();
-        let mut width = size.width as f32;
-        let mut height = size.height as f32;
-        let mut x = 0.0;
-        let mut y = 0.0;
-        let vw = st.get_ql_img_w().max(0) as f32;
-        let vh = st.get_ql_img_h().max(0) as f32;
-        // 全屏控制条同样覆盖在画面底部，不能从视频高度中扣除控制条高度。
-        if vw > 0.0 && vh > 0.0 {
-            let fit = (width / vw).min(height / vh);
-            width = vw * fit;
-            height = vh * fit;
-            x = (size.width as f32 - width) / 2.0;
-            y = (size.height as f32 - height) / 2.0;
-        }
-        out = Some((x as i32, y as i32, width as i32, height as i32));
+        // 全屏时播放器子窗口覆盖整个主窗口客户区。MFPlay 会在该矩形内自行
+        // 按视频比例留黑边；控制栏也以窗口矩形定位，始终贴住窗口最底部。
+        out = Some((0, 0, size.width as i32, size.height as i32));
     });
     out
 }
@@ -4834,6 +5129,7 @@ fn bind_tabs(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     state.on_switch_tab(move |idx| {
         if let Some(ui) = w.upgrade() {
             c.borrow_mut().switch_tab(idx as usize);
+            apply_folder_layout(&ui, &c);
             load_current(&ui, &c);
         }
     });
@@ -4844,6 +5140,7 @@ fn bind_tabs(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     state.on_move_tab(move |from, to| {
         if let Some(ui) = w.upgrade() {
             c.borrow_mut().move_tab(from as usize, to as usize);
+            apply_folder_layout(&ui, &c);
             load_current(&ui, &c);
         }
     });
@@ -5027,6 +5324,7 @@ fn bind_window_chrome(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     {
         // 图标是稳定窗口身份，仅设置一次；DWM 合成效果才需要有限重试。
         set_window_icon(ui);
+        schedule_native_window_icon(ui, 20);
         schedule_window_effects(ui, &[60, 250, 800]);
     }
 }
@@ -5455,6 +5753,44 @@ fn open_color_picker(_initial: slint::Color, _hwnd: isize) -> Option<slint::Colo
     None
 }
 
+/// 用 exe 内嵌的多尺寸图标资源设置窗口的原生大/小图标。
+///
+/// winit 的 `set_window_icon` 只影响 winit 自己维护的图标，任务栏悬停缩略图右上角
+/// 读的是窗口通过 `WM_SETICON` 记录的原生 HICON——不设置时 Windows 回退到通用 exe
+/// 图标。资源 ID 1 即 build.rs 经 winres 嵌入的 icon.ico。
+/// 用 `LR_SHARED` 加载：句柄由系统缓存管理，无需 DestroyIcon。
+#[cfg(windows)]
+fn set_native_window_icon(hwnd: isize) {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, LoadImageW, SendMessageW, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_SHARED,
+        SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON, WM_SETICON,
+    };
+
+    if hwnd == 0 {
+        return;
+    }
+    let hwnd = hwnd as *mut core::ffi::c_void;
+    // MAKEINTRESOURCEW(1)：按序号引用嵌入的图标资源
+    let resource = 1u16 as *const u16;
+    unsafe {
+        let hinst = GetModuleHandleW(std::ptr::null());
+        for (which, cx, cy) in [
+            (ICON_BIG, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON)),
+            (
+                ICON_SMALL,
+                GetSystemMetrics(SM_CXSMICON),
+                GetSystemMetrics(SM_CYSMICON),
+            ),
+        ] {
+            let icon = LoadImageW(hinst, resource, IMAGE_ICON, cx, cy, LR_SHARED);
+            if !icon.is_null() {
+                SendMessageW(hwnd, WM_SETICON, which as usize, icon as isize);
+            }
+        }
+    }
+}
+
 #[cfg(windows)]
 fn set_window_icon(ui: &MainWindow) {
     const ICON_PNG: &[u8] = include_bytes!("../icon.png");
@@ -5473,6 +5809,10 @@ fn set_window_icon(ui: &MainWindow) {
         };
         Some((rgba, info.width, info.height))
     };
+    // 原生窗口图标（任务栏缩略图角标）与 winit 图标各自独立，两者都要设置。
+    // HWND 可能晚于本次调用才创建，交给下方重试逻辑兜底。
+    set_native_window_icon(main_hwnd(ui));
+
     let Some((rgba, w, h)) = load() else {
         return;
     };
@@ -5481,6 +5821,26 @@ fn set_window_icon(ui: &MainWindow) {
     };
     ui.window().with_winit_window(move |winit_window| {
         winit_window.set_window_icon(Some(icon));
+    });
+}
+
+/// 窗口创建时机不定（实测事件循环启动后 80-250ms），首次设置可能因 HWND 未就绪
+/// 而落空；沿用 DWM 效果那套有限重试，直到拿到 HWND 为止。
+#[cfg(windows)]
+fn schedule_native_window_icon(ui: &MainWindow, retries_left: u32) {
+    let hwnd = main_hwnd(ui);
+    if hwnd != 0 {
+        set_native_window_icon(hwnd);
+        return;
+    }
+    if retries_left == 0 {
+        return;
+    }
+    let w = ui.as_weak();
+    slint::Timer::single_shot(std::time::Duration::from_millis(60), move || {
+        if let Some(ui) = w.upgrade() {
+            schedule_native_window_icon(&ui, retries_left - 1);
+        }
     });
 }
 

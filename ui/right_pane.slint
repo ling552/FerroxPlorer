@@ -48,7 +48,7 @@ component RightList inherits Rectangle {
                 // 名称区：正常显示文本，进入行内重命名（r-editing-index 命中）时换成输入框
                 Rectangle {
                     horizontal-stretch: 1;
-                    if AppState.r-editing-index != i: Text {
+                    if AppState.r-editing-index != i: name-text := Text {
                         width: 100%;
                         height: 100%;
                         text: entry.name;
@@ -104,7 +104,8 @@ component RightGrid inherits Rectangle {
     property <length> cell-w: 112px * AppState.icon-scale;
     property <length> icon-box: 58px * AppState.icon-scale;
     property <length> info-h: 16px;
-    property <length> cell-h: max(root.cell-w, 12px + root.icon-box + 30px + root.info-h + 10px);
+    property <length> name-h: 38px;
+    property <length> cell-h: max(root.cell-w, 12px + root.icon-box + root.name-h + root.info-h + 10px);
     property <length> pitch: root.cell-w + 10px;
     property <length> row-h: root.cell-h + 10px;
     property <int> cols: max(1, floor((list.visible-width - 24px) / root.pitch));
@@ -134,12 +135,17 @@ component RightGrid inherits Rectangle {
 
                     if cell.valid: card := Rectangle {
                         property <FileEntry> entry: AppState.r-entries[cell.idx];
+                        property <length> extra-name-h: 0px;
                         border-radius: Theme.radius-card;
                         border-width: 1px;
                         border-color: card.entry.selected ? #0078d473 : transparent;
                         background: card.entry.selected
                             ? #0078d426
                             : (ov.hover-idx == cell.idx ? #0078d412 : transparent);
+                        // 选中项向下扩展至名称完整高度
+                        height: card.entry.selected
+                            ? (root.cell-h + card.extra-name-h)
+                            : root.cell-h;
                         clip: true;
 
                         VerticalLayout {
@@ -159,14 +165,20 @@ component RightGrid inherits Rectangle {
                                     box: root.icon-box;
                                 }
                             }
-                            if AppState.r-editing-index != cell.idx: Text {
+                            if AppState.r-editing-index != cell.idx: name-text := Text {
                                 text: card.entry.name;
                                 font-size: Theme.fs-small;
                                 color: Theme.text;
                                 horizontal-alignment: center;
-                                wrap: char-wrap;
+                                vertical-alignment: top;
+                                wrap: word-wrap;
                                 overflow: elide;
-                                height: 30px;
+                                height: card.entry.selected ? self.preferred-height : root.name-h;
+                                init => {
+                                    if card.entry.selected && name-text.preferred-height > root.name-h {
+                                        card.extra-name-h = name-text.preferred-height - root.name-h;
+                                    }
+                                }
                             }
                             if AppState.r-editing-index == cell.idx: RenameEdit {
                                 text: card.entry.name;

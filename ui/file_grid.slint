@@ -22,7 +22,9 @@ export component FileGrid inherits Rectangle {
     property <length> cell-w: 112px * AppState.icon-scale;
     property <length> icon-box: 58px * AppState.icon-scale;
     property <length> info-h: 16px;
-    property <length> cell-h: max(root.cell-w, 12px + root.icon-box + 30px + root.info-h + 10px);
+    // 名称区域：选中项向下扩展以容纳完整文本，未选中项固定高度并截断
+    property <length> name-h: 38px;
+    property <length> cell-h: max(root.cell-w, 12px + root.icon-box + root.name-h + root.info-h + 10px);
     property <length> pitch: root.cell-w + 10px;
     // 每行高度（卡片 + 行间距 10px），用于 ListView 行高与命中换算
     property <length> row-h: root.cell-h + 10px;
@@ -56,13 +58,18 @@ export component FileGrid inherits Rectangle {
 
                     if cell.valid: card := Rectangle {
                         property <FileEntry> entry: AppState.entries[cell.idx];
+                        // 选中项名称可能需要的额外高度（超出默认 name-h 的部分）
+                        property <length> extra-name-h: 0px;
                         border-radius: Theme.radius-card;
                         border-width: 1px;
                         border-color: card.entry.selected ? #0078d473 : transparent;
                         background: card.entry.selected
                             ? #0078d426
                             : (ov.hover-idx == cell.idx ? #0078d412 : transparent);
-                        // 裁剪超出选中框的内容，避免长文件名溢出
+                        // 选中项向下扩展至名称完整高度（类似资源管理器），未选中项维持固定高度
+                        height: card.entry.selected
+                            ? (root.cell-h + card.extra-name-h)
+                            : root.cell-h;
                         clip: true;
 
                         VerticalLayout {
@@ -82,14 +89,21 @@ export component FileGrid inherits Rectangle {
                                     box: root.icon-box;
                                 }
                             }
-                            if AppState.editing-index != cell.idx: Text {
+                            if AppState.editing-index != cell.idx: name-text := Text {
                                 text: card.entry.name;
                                 font-size: Theme.fs-small;
                                 color: Theme.text;
                                 horizontal-alignment: center;
-                                wrap: char-wrap;
+                                vertical-alignment: top;
+                                wrap: word-wrap;
                                 overflow: elide;
-                                height: 30px;
+                                // 选中项显示完整高度，未选中项截断至固定高度
+                                height: card.entry.selected ? self.preferred-height : root.name-h;
+                                init => {
+                                    if card.entry.selected && name-text.preferred-height > root.name-h {
+                                        card.extra-name-h = name-text.preferred-height - root.name-h;
+                                    }
+                                }
                             }
                             if AppState.editing-index == cell.idx: RenameEdit {
                                 text: card.entry.name;

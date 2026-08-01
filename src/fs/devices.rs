@@ -3,6 +3,8 @@
 //! - list_content：进入设备内部，枚举某对象下的子对象（文件夹/文件），实现"像资源管理器一样浏览"
 //! - copy_to_temp：把设备上的文件复制到临时目录，供系统默认程序打开
 //! - parent_path：取某对象的父对象虚拟路径，供"向上"导航
+//! - 写操作：create_folder / create_file / rename / delete / pull_tree / push_tree / move_objects
+//!   （新建、重命名、删除，以及设备↔电脑、设备内部的复制/移动）
 //!
 //! 虚拟路径编码：
 //!   device://<deviceId>                 设备根（枚举 WPD_DEVICE_OBJECT_ID="DEVICE" 的子对象）
@@ -442,16 +444,9 @@ fn list_content_win(vpath: &str) -> windows::core::Result<Vec<Entry>> {
 }
 
 #[cfg(windows)]
-fn copy_to_temp_win(vpath: &str) -> windows::core::Result<std::path::PathBuf> {
-    use std::io::Write;
-    use windows::core::{Error, HRESULT, PCWSTR};
-    use windows::Win32::Devices::PortableDevices::{
-        IPortableDeviceKeyCollection, PortableDeviceKeyCollection, WPD_OBJECT_NAME,
-        WPD_OBJECT_ORIGINAL_FILE_NAME, WPD_RESOURCE_DEFAULT,
-    };
+fn copy_to_temp_win(vpath: &str) -> Result<std::path::PathBuf, String> {
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, IStream, CLSCTX_INPROC_SERVER, COINIT_DISABLE_OLE1DDE,
-        COINIT_MULTITHREADED, STGM_READ,
+        CoInitializeEx, COINIT_DISABLE_OLE1DDE, COINIT_MULTITHREADED,
     };
 
     // 本函数在后台线程被调用（open_device_file 的 spawn），必须先初始化本线程 COM；
@@ -460,78 +455,25 @@ fn copy_to_temp_win(vpath: &str) -> windows::core::Result<std::path::PathBuf> {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED | COINIT_DISABLE_OLE1DDE);
     }
 
-    let (device_id, obj) =
-        parse(vpath).ok_or_else(|| Error::new(HRESULT(-1), "非 device:// 路径"))?;
+    let (device_id, obj) = parse(vpath).ok_or("非 device:// 路径")?;
     if obj == "DEVICE" {
-        return Err(Error::new(HRESULT(-1), "设备根不可作为文件打开"));
+        return Err("设备根不可作为文件打开".to_string());
     }
 
-    let device = open_device(&device_id)?;
-    let content = unsafe { device.Content()? };
-    let props = unsafe { content.Properties()? };
-
-    // 取原始文件名用于临时文件命名
-    let keys: IPortableDeviceKeyCollection =
-        unsafe { CoCreateInstance(&PortableDeviceKeyCollection, None, CLSCTX_INPROC_SERVER)? };
-    unsafe {
-        keys.Add(&WPD_OBJECT_ORIGINAL_FILE_NAME)?;
-        keys.Add(&WPD_OBJECT_NAME)?;
-    }
-    let obj_wide = to_wide(&obj);
-    let fname = match unsafe { props.GetValues(PCWSTR(obj_wide.as_ptr()), &keys) } {
-        Ok(vals) => {
-            let orig = get_string(&vals, &WPD_OBJECT_ORIGINAL_FILE_NAME);
-            if !orig.is_empty() {
-                orig
-            } else {
-                get_string(&vals, &WPD_OBJECT_NAME)
-            }
-        }
-        Err(_) => String::new(),
-    };
-    let fname = sanitize_filename(&fname, &obj);
-
-    // 取默认资源流
-    let resources = unsafe { content.Transfer()? };
-    let mut optimal = 0u32;
-    let mut stream: Option<IStream> = None;
-    unsafe {
-        resources.GetStream(
-            PCWSTR(obj_wide.as_ptr()),
-            &WPD_RESOURCE_DEFAULT,
-            STGM_READ.0 as u32,
-            &mut optimal,
-            &mut stream,
-        )?
-    };
-    let stream = stream.ok_or_else(|| Error::new(HRESULT(-1), "无法获取设备文件流"))?;
+    let s = session(&device_id)?;
+    let name = object_info_in(&s, &device_id, &obj)
+        .map(|(n, _, _)| n)
+        .unwrap_or_default();
+    let fname = sanitize_filename(&name, &obj);
 
     let dir = std::env::temp_dir().join("FerroxPlorer_mtp");
     let _ = std::fs::create_dir_all(&dir);
     let out_path = dir.join(&fname);
     let mut file = std::fs::File::create(&out_path)
-        .map_err(|e| Error::new(HRESULT(-1), format!("创建临时文件失败: {e}")))?;
+        .map_err(|e| format!("创建临时文件失败: {e}"))?;
 
-    let buf_size = if optimal == 0 {
-        256 * 1024
-    } else {
-        optimal as usize
-    };
-    let mut buf = vec![0u8; buf_size];
-    loop {
-        let mut read = 0u32;
-        let hr = unsafe { stream.Read(buf.as_mut_ptr().cast(), buf.len() as u32, Some(&mut read)) };
-        if read > 0 {
-            file.write_all(&buf[..read as usize])
-                .map_err(|e| Error::new(HRESULT(-1), format!("写入临时文件失败: {e}")))?;
-        }
-        // S_OK(0) 继续；S_FALSE(1) 表示已到末尾，读完本批后结束；读为 0 也结束
-        if read == 0 || hr.0 != 0 {
-            break;
-        }
-    }
-    let _ = file.flush();
-
+    let (stream, optimal) = open_read_stream(&s, &obj)?;
+    drain_stream(&stream, optimal, &mut file, &mut NoSink)?;
     Ok(out_path)
 }
 
@@ -556,6 +498,813 @@ fn sanitize_filename(name: &str, fallback_obj: &str) -> String {
     } else {
         cleaned
     }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  写操作：新建 / 重命名 / 删除 / 传输（设备↔电脑、设备内部）
+//
+//  WPD 的写入全部走 IPortableDeviceContent：
+//    - CreateObjectWithPropertiesOnly  建文件夹（无数据流的对象）
+//    - CreateObjectWithPropertiesAndData + IStream::Commit  建文件并写入内容
+//    - Delete（WITH_RECURSION）        删除对象及其子树
+//    - Move / Copy                     设备内部搬移（可选命令，部分设备不支持）
+//    - IPortableDeviceProperties::SetValues  改名
+//
+//  这些函数会打开设备（数十毫秒），因此以「一次操作一个会话」的粒度复用句柄；
+//  调用线程必须已初始化 COM（UI 线程由 winit 置为 STA，后台任务线程自行 MTA）。
+// ══════════════════════════════════════════════════════════════════════
+
+/// 传输进度与取消回调。由调用方（后台任务）实现，设备侧只负责按块上报。
+pub trait Sink {
+    /// 开始传输一个文件：名称与总字节数（未知时为 0）
+    fn begin_file(&mut self, name: &str, size: u64);
+    /// 已传输 `bytes` 字节。返回 false 表示请求取消，传输会尽快中止。
+    fn advance(&mut self, bytes: u64) -> bool;
+    /// 当前文件传输结束（成功落地）
+    fn end_file(&mut self) {}
+}
+
+/// 不关心进度的场景（新建空文件等）使用的空实现
+pub struct NoSink;
+impl Sink for NoSink {
+    fn begin_file(&mut self, _name: &str, _size: u64) {}
+    fn advance(&mut self, _bytes: u64) -> bool {
+        true
+    }
+}
+
+/// 判断路径是否位于便携设备内（含设备根）
+pub fn is_device_path(path: &str) -> bool {
+    path.starts_with("device://")
+}
+
+/// 取设备 ID（不含对象部分）；非 device:// 路径返回 None
+pub fn device_id_of(vpath: &str) -> Option<String> {
+    parse(vpath).map(|(d, _)| d)
+}
+
+/// 拼接子对象虚拟路径
+pub fn child_vpath(device_id: &str, object_id: &str) -> String {
+    format!("device://{}{}{}", device_id, SEP, object_id)
+}
+
+macro_rules! device_op {
+    ($body:expr, $fallback:expr) => {{
+        #[cfg(windows)]
+        {
+            $body
+        }
+        #[cfg(not(windows))]
+        {
+            $fallback
+        }
+    }};
+}
+
+/// 在设备目录下新建文件夹，成功返回新对象的虚拟路径
+pub fn create_folder(parent_vpath: &str, name: &str) -> Result<String, String> {
+    device_op!(
+        create_object_win(parent_vpath, name, None, &mut NoSink),
+        {
+            let _ = (parent_vpath, name);
+            Err("当前平台不支持便携设备".to_string())
+        }
+    )
+}
+
+/// 在设备目录下新建空文件，成功返回新对象的虚拟路径
+pub fn create_file(parent_vpath: &str, name: &str) -> Result<String, String> {
+    device_op!(
+        create_object_win(parent_vpath, name, Some(std::path::Path::new("")), &mut NoSink),
+        {
+            let _ = (parent_vpath, name);
+            Err("当前平台不支持便携设备".to_string())
+        }
+    )
+}
+
+/// 重命名设备上的对象
+pub fn rename(vpath: &str, new_name: &str) -> Result<(), String> {
+    device_op!(rename_win(vpath, new_name), {
+        let _ = (vpath, new_name);
+        Err("当前平台不支持便携设备".to_string())
+    })
+}
+
+/// 删除设备上的对象（含子树）。所有 vpath 必须属于同一设备。
+pub fn delete(vpaths: &[String]) -> Result<(), String> {
+    device_op!(delete_win(vpaths), {
+        let _ = vpaths;
+        Err("当前平台不支持便携设备".to_string())
+    })
+}
+
+/// 查找父目录下的同名子项，返回 (虚拟路径, 是否文件夹, 大小)
+pub fn child_named(parent_vpath: &str, name: &str) -> Option<(String, bool, u64)> {
+    let target = name.trim();
+    list_content(parent_vpath)
+        .into_iter()
+        .find(|e| e.name.eq_ignore_ascii_case(target))
+        .map(|e| (e.path, e.is_dir, e.size_bytes))
+}
+
+/// 设备 → 本地：把对象（文件或整个文件夹）复制到本地目录下。
+/// `as_name` 为 Some 时改用该名称落地（冲突时「保留两者」用）。
+pub fn pull_tree(
+    vpath: &str,
+    dst_dir: &std::path::Path,
+    as_name: Option<&str>,
+    sink: &mut dyn Sink,
+) -> Result<(), String> {
+    device_op!(pull_tree_win(vpath, dst_dir, as_name, sink), {
+        let _ = (vpath, dst_dir, as_name, sink);
+        Err("当前平台不支持便携设备".to_string())
+    })
+}
+
+/// 本地 → 设备：把本地文件或目录复制到设备目录下。
+/// `as_name` 为 Some 时改用该名称写入（冲突时「保留两者」用）。
+pub fn push_tree(
+    src: &std::path::Path,
+    parent_vpath: &str,
+    as_name: Option<&str>,
+    sink: &mut dyn Sink,
+) -> Result<(), String> {
+    device_op!(push_tree_win(src, parent_vpath, as_name, sink), {
+        let _ = (src, parent_vpath, as_name, sink);
+        Err("当前平台不支持便携设备".to_string())
+    })
+}
+
+/// 递归统计设备上某对象的文件数与总字节（用于任务进度的分母）。
+/// 需要逐层枚举，大目录会慢，只在任务开始前调用一次。
+pub fn tree_totals(vpath: &str) -> (i32, u64) {
+    let mut files = 0i32;
+    let mut bytes = 0u64;
+    match object_info(vpath) {
+        Some((_, false, size)) => (1, size),
+        Some((_, true, _)) | None => {
+            tree_children_totals(vpath, &mut files, &mut bytes);
+            (files, bytes)
+        }
+    }
+}
+
+/// 目录条目已经携带类型和大小，只对子目录继续枚举；避免为每个文件重新 Open 设备。
+fn tree_children_totals(vpath: &str, files: &mut i32, bytes: &mut u64) {
+    for entry in list_content(vpath) {
+        if entry.is_dir {
+            tree_children_totals(&entry.path, files, bytes);
+        } else {
+            *files += 1;
+            *bytes += entry.size_bytes;
+        }
+    }
+}
+
+/// 设备内部移动（同一设备）。设备不支持 Move 命令时返回 Err，由调用方回退为复制+删除。
+pub fn move_objects(vpaths: &[String], dst_parent_vpath: &str) -> Result<(), String> {
+    device_op!(move_objects_win(vpaths, dst_parent_vpath), {
+        let _ = (vpaths, dst_parent_vpath);
+        Err("当前平台不支持便携设备".to_string())
+    })
+}
+
+/// 读取对象的名称与是否文件夹；对象不存在返回 None
+pub fn object_info(vpath: &str) -> Option<(String, bool, u64)> {
+    device_op!(object_info_win(vpath), {
+        let _ = vpath;
+        None
+    })
+}
+
+/// 设备会话：一次操作内复用设备句柄，避免反复 Open 的开销。
+#[cfg(windows)]
+struct Session {
+    /// 持有以维持 COM 生命周期：content/props 由它派生，提前释放会失效
+    _device: windows::Win32::Devices::PortableDevices::IPortableDevice,
+    content: windows::Win32::Devices::PortableDevices::IPortableDeviceContent,
+    props: windows::Win32::Devices::PortableDevices::IPortableDeviceProperties,
+}
+
+#[cfg(windows)]
+fn session(device_id: &str) -> Result<Session, String> {
+    let device = open_device(device_id).map_err(|e| format!("无法打开设备：{}", e.message()))?;
+    let content = unsafe { device.Content() }.map_err(|e| format!("读取设备内容失败：{}", e.message()))?;
+    let props = unsafe { content.Properties() }
+        .map_err(|e| format!("读取设备属性失败：{}", e.message()))?;
+    Ok(Session {
+        _device: device,
+        content,
+        props,
+    })
+}
+
+/// 构造一组待写入的对象属性
+#[cfg(windows)]
+fn new_values(
+) -> Result<windows::Win32::Devices::PortableDevices::IPortableDeviceValues, String> {
+    use windows::Win32::Devices::PortableDevices::PortableDeviceValues;
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+    unsafe { CoCreateInstance(&PortableDeviceValues, None, CLSCTX_INPROC_SERVER) }
+        .map_err(|e| format!("创建属性集失败：{}", e.message()))
+}
+
+/// 新建对象：`local_src` 为 None 建文件夹；为 Some 建文件并写入该本地文件内容
+/// （空路径 "" 表示建 0 字节文件）。成功返回新对象的虚拟路径。
+#[cfg(windows)]
+fn create_object_win(
+    parent_vpath: &str,
+    name: &str,
+    local_src: Option<&std::path::Path>,
+    sink: &mut dyn Sink,
+) -> Result<String, String> {
+    let (device_id, parent_obj) = parse(parent_vpath).ok_or("不是便携设备路径")?;
+    let s = session(&device_id)?;
+    let oid = create_object_in(&s, &parent_obj, name, local_src, sink)?;
+    Ok(child_vpath(&device_id, &oid))
+}
+
+/// 在已打开的会话中新建对象，返回新对象 ID。
+#[cfg(windows)]
+fn create_object_in(
+    s: &Session,
+    parent_obj: &str,
+    name: &str,
+    local_src: Option<&std::path::Path>,
+    sink: &mut dyn Sink,
+) -> Result<String, String> {
+    use std::io::Read;
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::Devices::PortableDevices::{
+        WPD_CONTENT_TYPE_FOLDER, WPD_OBJECT_CONTENT_TYPE, WPD_OBJECT_FORMAT,
+        WPD_OBJECT_FORMAT_UNSPECIFIED, WPD_OBJECT_NAME, WPD_OBJECT_ORIGINAL_FILE_NAME,
+        WPD_OBJECT_PARENT_ID, WPD_OBJECT_SIZE,
+    };
+    use windows::Win32::System::Com::{CoTaskMemFree, IStream, STGC_DEFAULT};
+
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("名称不能为空".to_string());
+    }
+
+    let values = new_values()?;
+    let parent_w = to_wide(parent_obj);
+    let name_w = to_wide(name);
+    unsafe {
+        values
+            .SetStringValue(&WPD_OBJECT_PARENT_ID, PCWSTR(parent_w.as_ptr()))
+            .map_err(|e| format!("设置父对象失败：{}", e.message()))?;
+        values
+            .SetStringValue(&WPD_OBJECT_NAME, PCWSTR(name_w.as_ptr()))
+            .map_err(|e| format!("设置名称失败：{}", e.message()))?;
+        // 文件名属性：多数 MTP 设备以 ORIGINAL_FILE_NAME 作为文件系统名，缺失会导致
+        // 新建对象在设备上不可见/无扩展名，故与 NAME 一并写入
+        let _ = values.SetStringValue(&WPD_OBJECT_ORIGINAL_FILE_NAME, PCWSTR(name_w.as_ptr()));
+    }
+
+    let Some(src) = local_src else {
+        // —— 文件夹 ——
+        unsafe {
+            values
+                .SetGuidValue(&WPD_OBJECT_CONTENT_TYPE, &WPD_CONTENT_TYPE_FOLDER)
+                .map_err(|e| format!("设置对象类型失败：{}", e.message()))?;
+        }
+        let mut oid = PWSTR(std::ptr::null_mut());
+        unsafe {
+            s.content
+                .CreateObjectWithPropertiesOnly(&values, &mut oid)
+                .map_err(|e| format!("在设备上新建文件夹失败：{}", e.message()))?;
+        }
+        let id = pwstr_read(oid.0);
+        unsafe { CoTaskMemFree(Some(oid.0.cast())) };
+        return Ok(id);
+    };
+
+    // —— 文件 ——
+    // 空路径约定为「新建 0 字节文件」，不读取本地内容
+    let empty = src.as_os_str().is_empty();
+    let size = if empty {
+        0u64
+    } else {
+        std::fs::metadata(src)
+            .map_err(|e| format!("读取源文件失败：{}", e))?
+            .len()
+    };
+    unsafe {
+        values
+            .SetUnsignedLargeIntegerValue(&WPD_OBJECT_SIZE, size)
+            .map_err(|e| format!("设置大小失败：{}", e.message()))?;
+        let _ = values.SetGuidValue(&WPD_OBJECT_FORMAT, &WPD_OBJECT_FORMAT_UNSPECIFIED);
+    }
+
+    let mut stream: Option<IStream> = None;
+    let mut optimal = 0u32;
+    let mut cookie = PWSTR(std::ptr::null_mut());
+    unsafe {
+        s.content
+            .CreateObjectWithPropertiesAndData(&values, &mut stream, &mut optimal, &mut cookie)
+            .map_err(|e| format!("在设备上新建文件失败：{}", e.message()))?;
+        if !cookie.0.is_null() {
+            CoTaskMemFree(Some(cookie.0.cast()));
+        }
+    }
+    let stream = stream.ok_or("设备未返回写入流")?;
+
+    sink.begin_file(name, size);
+    if !empty && size > 0 {
+        let mut file = std::fs::File::open(src).map_err(|e| format!("打开源文件失败：{}", e))?;
+        let cap = if optimal == 0 { 256 * 1024 } else { optimal as usize };
+        let mut buf = vec![0u8; cap];
+        loop {
+            let n = file.read(&mut buf).map_err(|e| format!("读取源文件失败：{}", e))?;
+            if n == 0 {
+                break;
+            }
+            let mut written = 0u32;
+            let hr = unsafe {
+                stream.Write(buf.as_ptr().cast(), n as u32, Some(&mut written))
+            };
+            if hr.is_err() {
+                // 中途失败：流未 Commit，设备会丢弃这个半成品对象
+                return Err(format!("写入设备失败：0x{:08X}", hr.0));
+            }
+            if written as usize != n {
+                return Err(format!("写入设备不完整：已写 {}，应写 {}", written, n));
+            }
+            if !sink.advance(n as u64) {
+                return Err("已取消".to_string());
+            }
+        }
+    }
+    unsafe {
+        stream
+            .Commit(STGC_DEFAULT)
+            .map_err(|e| format!("提交设备文件失败：{}", e.message()))?;
+    }
+    sink.end_file();
+
+    // 提交后经 IPortableDeviceDataStream 取回真实对象 ID（用于后续递归/删除）
+    let oid = unsafe {
+        use windows::core::Interface;
+        use windows::Win32::Devices::PortableDevices::IPortableDeviceDataStream;
+        match stream.cast::<IPortableDeviceDataStream>() {
+            Ok(ds) => match ds.GetObjectID() {
+                Ok(p) => {
+                    let id = pwstr_read(p.0);
+                    CoTaskMemFree(Some(p.0.cast()));
+                    id
+                }
+                Err(e) => return Err(format!("获取对象 ID 失败：{}", e.message())),
+            },
+            Err(e) => return Err(format!("获取数据流接口失败：{}", e.message())),
+        }
+    };
+    if oid.is_empty() {
+        return Err("设备未返回新对象 ID".to_string());
+    }
+    Ok(oid)
+}
+
+#[cfg(windows)]
+fn rename_win(vpath: &str, new_name: &str) -> Result<(), String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Devices::PortableDevices::{
+        WPD_OBJECT_NAME, WPD_OBJECT_ORIGINAL_FILE_NAME,
+    };
+
+    let new_name = new_name.trim();
+    if new_name.is_empty() {
+        return Err("名称不能为空".to_string());
+    }
+    let (device_id, obj) = parse(vpath).ok_or("不是便携设备路径")?;
+    if obj == "DEVICE" {
+        return Err("设备本身不可重命名".to_string());
+    }
+    let s = session(&device_id)?;
+    let obj_w = to_wide(&obj);
+    let name_w = to_wide(new_name);
+
+    // 设备对 NAME / ORIGINAL_FILE_NAME 的可写性不一致（相机常只认 NAME，
+    // 手机存储常只认 ORIGINAL_FILE_NAME）：逐个单独提交，任一成功即视为成功。
+    let mut last_err = String::new();
+    let mut ok = false;
+    for key in [&WPD_OBJECT_ORIGINAL_FILE_NAME, &WPD_OBJECT_NAME] {
+        let values = match new_values() {
+            Ok(v) => v,
+            Err(e) => {
+                last_err = e;
+                continue;
+            }
+        };
+        let set = unsafe { values.SetStringValue(key, PCWSTR(name_w.as_ptr())) };
+        if let Err(e) = set {
+            last_err = e.message().to_string();
+            continue;
+        }
+        match unsafe { s.props.SetValues(PCWSTR(obj_w.as_ptr()), &values) } {
+            Ok(_) => ok = true,
+            Err(e) => last_err = e.message().to_string(),
+        }
+    }
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("设备拒绝重命名：{}", last_err))
+    }
+}
+
+/// 把一组对象 ID 装进 WPD 的 PROPVARIANT 集合（Delete / Move 的入参格式）
+#[cfg(windows)]
+fn objid_collection(
+    ids: &[String],
+) -> Result<windows::Win32::Devices::PortableDevices::IPortableDevicePropVariantCollection, String>
+{
+    use windows::Win32::Devices::PortableDevices::{
+        IPortableDevicePropVariantCollection, PortableDevicePropVariantCollection,
+    };
+    use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+    use windows::Win32::System::Variant::VT_LPWSTR;
+
+    let coll: IPortableDevicePropVariantCollection = unsafe {
+        CoCreateInstance(
+            &PortableDevicePropVariantCollection,
+            None,
+            CLSCTX_INPROC_SERVER,
+        )
+    }
+    .map_err(|e| format!("创建对象集合失败：{}", e.message()))?;
+
+    for id in ids {
+        // Add 内部会拷贝值，故这里的宽字符缓冲只需在调用期间存活
+        let mut w = to_wide(id);
+        let mut pv = PROPVARIANT::default();
+        unsafe {
+            let inner = &mut pv.Anonymous.Anonymous;
+            inner.vt = VT_LPWSTR;
+            inner.Anonymous.pwszVal = windows::core::PWSTR(w.as_mut_ptr());
+            coll.Add(&pv)
+                .map_err(|e| format!("加入对象集合失败：{}", e.message()))?;
+            // pwszVal 指向栈上缓冲而非 CoTaskMem，不能走 PropVariantClear，
+            // 置零后由 Rust 自行释放 w
+            let inner = &mut pv.Anonymous.Anonymous;
+            inner.Anonymous.pwszVal = windows::core::PWSTR(std::ptr::null_mut());
+            inner.vt = windows::Win32::System::Variant::VT_EMPTY;
+        }
+    }
+    Ok(coll)
+}
+
+#[cfg(windows)]
+fn delete_win(vpaths: &[String]) -> Result<(), String> {
+    use windows::Win32::Devices::PortableDevices::PORTABLE_DEVICE_DELETE_WITH_RECURSION;
+
+    if vpaths.is_empty() {
+        return Ok(());
+    }
+    let (device_id, _) = parse(&vpaths[0]).ok_or("不是便携设备路径")?;
+    let mut ids = Vec::with_capacity(vpaths.len());
+    for v in vpaths {
+        let (d, o) = parse(v).ok_or("不是便携设备路径")?;
+        if d != device_id {
+            return Err("不能一次删除多个设备上的项目".to_string());
+        }
+        if o == "DEVICE" {
+            return Err("设备本身不可删除".to_string());
+        }
+        ids.push(o);
+    }
+
+    let s = session(&device_id)?;
+    let coll = objid_collection(&ids)?;
+    let mut results = None;
+    unsafe {
+        s.content
+            .Delete(
+                PORTABLE_DEVICE_DELETE_WITH_RECURSION.0 as u32,
+                &coll,
+                &mut results,
+            )
+            .map_err(|e| format!("设备删除失败：{}", e.message()))?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn move_objects_win(vpaths: &[String], dst_parent_vpath: &str) -> Result<(), String> {
+    if vpaths.is_empty() {
+        return Ok(());
+    }
+    let (dst_dev, dst_obj) = parse(dst_parent_vpath).ok_or("目标不是便携设备路径")?;
+    let mut ids = Vec::with_capacity(vpaths.len());
+    for v in vpaths {
+        let (d, o) = parse(v).ok_or("不是便携设备路径")?;
+        if d != dst_dev {
+            return Err("跨设备移动请使用复制后删除".to_string());
+        }
+        ids.push(o);
+    }
+
+    let s = session(&dst_dev)?;
+    let coll = objid_collection(&ids)?;
+    let dst_w = to_wide(&dst_obj);
+    let mut results = None;
+    unsafe {
+        s.content
+            .Move(&coll, windows::core::PCWSTR(dst_w.as_ptr()), &mut results)
+            .map_err(|e| format!("设备移动失败：{}", e.message()))?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn object_info_win(vpath: &str) -> Option<(String, bool, u64)> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Devices::PortableDevices::{
+        IPortableDeviceKeyCollection, PortableDeviceKeyCollection, WPD_CONTENT_TYPE_FOLDER,
+        WPD_CONTENT_TYPE_FUNCTIONAL_OBJECT, WPD_OBJECT_CONTENT_TYPE, WPD_OBJECT_NAME,
+        WPD_OBJECT_ORIGINAL_FILE_NAME, WPD_OBJECT_SIZE,
+    };
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+
+    let (device_id, obj) = parse(vpath)?;
+    if obj == "DEVICE" {
+        return Some((friendly_name(&device_id).unwrap_or_default(), true, 0));
+    }
+    let s = session(&device_id).ok()?;
+    let keys: IPortableDeviceKeyCollection =
+        unsafe { CoCreateInstance(&PortableDeviceKeyCollection, None, CLSCTX_INPROC_SERVER) }
+            .ok()?;
+    unsafe {
+        keys.Add(&WPD_OBJECT_NAME).ok()?;
+        keys.Add(&WPD_OBJECT_ORIGINAL_FILE_NAME).ok()?;
+        keys.Add(&WPD_OBJECT_CONTENT_TYPE).ok()?;
+        keys.Add(&WPD_OBJECT_SIZE).ok()?;
+    }
+    let obj_w = to_wide(&obj);
+    let vals = unsafe { s.props.GetValues(PCWSTR(obj_w.as_ptr()), &keys) }.ok()?;
+    let orig = get_string(&vals, &WPD_OBJECT_ORIGINAL_FILE_NAME);
+    let name = if orig.is_empty() {
+        get_string(&vals, &WPD_OBJECT_NAME)
+    } else {
+        orig
+    };
+    let ctype = unsafe { vals.GetGuidValue(&WPD_OBJECT_CONTENT_TYPE) }.unwrap_or_default();
+    let is_dir = ctype == WPD_CONTENT_TYPE_FOLDER || ctype == WPD_CONTENT_TYPE_FUNCTIONAL_OBJECT;
+    let size = if is_dir {
+        0
+    } else {
+        unsafe { vals.GetUnsignedLargeIntegerValue(&WPD_OBJECT_SIZE) }.unwrap_or(0)
+    };
+    Some((name, is_dir, size))
+}
+
+/// 打开设备对象的只读数据流，返回 (流, 建议缓冲大小)
+#[cfg(windows)]
+fn open_read_stream(
+    s: &Session,
+    obj: &str,
+) -> Result<(windows::Win32::System::Com::IStream, u32), String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Devices::PortableDevices::WPD_RESOURCE_DEFAULT;
+    use windows::Win32::System::Com::{IStream, STGM_READ};
+
+    let resources = unsafe { s.content.Transfer() }
+        .map_err(|e| format!("设备不支持读取内容：{}", e.message()))?;
+    let obj_w = to_wide(obj);
+    let mut optimal = 0u32;
+    let mut stream: Option<IStream> = None;
+    unsafe {
+        resources
+            .GetStream(
+                PCWSTR(obj_w.as_ptr()),
+                &WPD_RESOURCE_DEFAULT,
+                STGM_READ.0 as u32,
+                &mut optimal,
+                &mut stream,
+            )
+            .map_err(|e| format!("打开设备文件失败：{}", e.message()))?;
+    }
+    let stream = stream.ok_or("设备未返回读取流")?;
+    Ok((stream, optimal))
+}
+
+/// 把设备流写入 `out`，按块上报进度。
+#[cfg(windows)]
+fn drain_stream(
+    stream: &windows::Win32::System::Com::IStream,
+    optimal: u32,
+    out: &mut impl std::io::Write,
+    sink: &mut dyn Sink,
+) -> Result<(), String> {
+    let cap = if optimal == 0 {
+        256 * 1024
+    } else {
+        optimal as usize
+    };
+    let mut buf = vec![0u8; cap];
+    loop {
+        let mut read = 0u32;
+        let hr = unsafe { stream.Read(buf.as_mut_ptr().cast(), buf.len() as u32, Some(&mut read)) };
+        if read > 0 {
+            out.write_all(&buf[..read as usize])
+                .map_err(|e| format!("写入失败：{}", e))?;
+            if !sink.advance(read as u64) {
+                return Err("已取消".to_string());
+            }
+        }
+        // S_OK(0) 继续；S_FALSE(1) 表示已到末尾，读完本批后结束
+        if read == 0 || hr.0 != 0 {
+            break;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn pull_tree_win(
+    vpath: &str,
+    dst_dir: &std::path::Path,
+    as_name: Option<&str>,
+    sink: &mut dyn Sink,
+) -> Result<(), String> {
+    let (device_id, obj) = parse(vpath).ok_or("不是便携设备路径")?;
+    let s = session(&device_id)?;
+    pull_in(&s, &device_id, &obj, dst_dir, as_name, sink)
+}
+
+/// 递归拉取：`obj` 为文件则写入 `dst_dir/名称`，为文件夹则在其下建同名目录后递归。
+#[cfg(windows)]
+fn pull_in(
+    s: &Session,
+    device_id: &str,
+    obj: &str,
+    dst_dir: &std::path::Path,
+    as_name: Option<&str>,
+    sink: &mut dyn Sink,
+) -> Result<(), String> {
+    let (name, is_dir, size) =
+        object_info_in(s, device_id, obj).ok_or("无法读取设备对象信息")?;
+    let name = sanitize_filename(as_name.unwrap_or(&name), obj);
+    let dest = dst_dir.join(&name);
+
+    if is_dir {
+        std::fs::create_dir_all(&dest).map_err(|e| format!("创建目录失败：{}", e))?;
+        for child in list_content(&child_vpath(device_id, obj)) {
+            let (_, cobj) = parse(&child.path).ok_or("设备路径解析失败")?;
+            pull_in(s, device_id, &cobj, &dest, None, sink)?;
+        }
+        return Ok(());
+    }
+
+    sink.begin_file(&name, size);
+    let (stream, optimal) = open_read_stream(s, obj)?;
+    // 先写临时文件再改名：中途取消/失败不会在目标目录留下半截文件。
+    // 加入进程 ID，避免同一目录中并发拉取/重试时临时文件互相覆盖。
+    let tmp = dest.with_extension(format!(
+        "{}.{}.fxpart",
+        dest.extension().and_then(|e| e.to_str()).unwrap_or(""),
+        std::process::id()
+    ));
+    let mut file =
+        std::fs::File::create(&tmp).map_err(|e| format!("创建本地文件失败：{}", e))?;
+    let res = drain_stream(&stream, optimal, &mut file, sink);
+    drop(file);
+    if let Err(e) = res {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    std::fs::rename(&tmp, &dest).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("落盘失败：{}", e)
+    })?;
+    sink.end_file();
+    Ok(())
+}
+
+/// 会话内读取对象信息（避免 object_info 每次重开设备）
+#[cfg(windows)]
+fn object_info_in(s: &Session, device_id: &str, obj: &str) -> Option<(String, bool, u64)> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Devices::PortableDevices::{
+        IPortableDeviceKeyCollection, PortableDeviceKeyCollection, WPD_CONTENT_TYPE_FOLDER,
+        WPD_CONTENT_TYPE_FUNCTIONAL_OBJECT, WPD_OBJECT_CONTENT_TYPE, WPD_OBJECT_NAME,
+        WPD_OBJECT_ORIGINAL_FILE_NAME, WPD_OBJECT_SIZE,
+    };
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+
+    if obj == "DEVICE" {
+        return Some((friendly_name(device_id).unwrap_or_default(), true, 0));
+    }
+    let keys: IPortableDeviceKeyCollection =
+        unsafe { CoCreateInstance(&PortableDeviceKeyCollection, None, CLSCTX_INPROC_SERVER) }
+            .ok()?;
+    unsafe {
+        keys.Add(&WPD_OBJECT_NAME).ok()?;
+        keys.Add(&WPD_OBJECT_ORIGINAL_FILE_NAME).ok()?;
+        keys.Add(&WPD_OBJECT_CONTENT_TYPE).ok()?;
+        keys.Add(&WPD_OBJECT_SIZE).ok()?;
+    }
+    let obj_w = to_wide(obj);
+    let vals = unsafe { s.props.GetValues(PCWSTR(obj_w.as_ptr()), &keys) }.ok()?;
+    let orig = get_string(&vals, &WPD_OBJECT_ORIGINAL_FILE_NAME);
+    let name = if orig.is_empty() {
+        get_string(&vals, &WPD_OBJECT_NAME)
+    } else {
+        orig
+    };
+    let ctype = unsafe { vals.GetGuidValue(&WPD_OBJECT_CONTENT_TYPE) }.unwrap_or_default();
+    let is_dir = ctype == WPD_CONTENT_TYPE_FOLDER || ctype == WPD_CONTENT_TYPE_FUNCTIONAL_OBJECT;
+    let size = if is_dir {
+        0
+    } else {
+        unsafe { vals.GetUnsignedLargeIntegerValue(&WPD_OBJECT_SIZE) }.unwrap_or(0)
+    };
+    Some((name, is_dir, size))
+}
+
+#[cfg(windows)]
+fn push_tree_win(
+    src: &std::path::Path,
+    parent_vpath: &str,
+    as_name: Option<&str>,
+    sink: &mut dyn Sink,
+) -> Result<(), String> {
+    let (device_id, parent_obj) = parse(parent_vpath).ok_or("目标不是便携设备路径")?;
+    let s = session(&device_id)?;
+    push_in(&s, &device_id, src, &parent_obj, as_name, sink)
+}
+
+/// 递归推送：目录先在设备上建同名文件夹（已存在则复用），文件直接写入。
+#[cfg(windows)]
+fn push_in(
+    s: &Session,
+    device_id: &str,
+    src: &std::path::Path,
+    parent_obj: &str,
+    as_name: Option<&str>,
+    sink: &mut dyn Sink,
+) -> Result<(), String> {
+    let name = match as_name {
+        Some(n) => n.to_string(),
+        None => src
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .ok_or("源路径没有名称")?,
+    };
+
+    if src.is_dir() {
+        // 目标已有同名文件夹则合并进去，避免设备上堆出重复目录
+        let parent_v = child_vpath(device_id, parent_obj);
+        let existing = child_named(&parent_v, &name).and_then(|(v, is_dir, _)| {
+            if is_dir {
+                parse(&v).map(|(_, o)| o)
+            } else {
+                None
+            }
+        });
+        let dir_obj = match existing {
+            Some(o) => o,
+            None => create_object_in(s, parent_obj, &name, None, sink)?,
+        };
+        let iter = std::fs::read_dir(src).map_err(|e| format!("读取源目录失败：{}", e))?;
+        for entry in iter.flatten() {
+            push_in(s, device_id, &entry.path(), &dir_obj, None, sink)?;
+        }
+        return Ok(());
+    }
+
+    // 覆盖同名文件时先用临时名称完整上传，再删除旧对象并把新对象改回原名。
+    // 上传失败/取消不会碰旧文件，避免设备断开或空间不足导致不可恢复的数据丢失。
+    let parent_v = child_vpath(device_id, parent_obj);
+    if let Some((old_vpath, false, _)) = child_named(&parent_v, &name) {
+        let temp_name = free_device_temp_name(&parent_v, &name);
+        let new_obj = create_object_in(s, parent_obj, &temp_name, Some(src), sink)?;
+        delete_win(&[old_vpath]).map_err(|e| format!("替换旧文件失败：{}", e))?;
+        let new_vpath = child_vpath(device_id, &new_obj);
+        rename_win(&new_vpath, &name).map_err(|e| {
+            format!("文件已上传，但恢复原名称失败（当前名称：{}）：{}", temp_name, e)
+        })?;
+        return Ok(());
+    }
+    create_object_in(s, parent_obj, &name, Some(src), sink).map(|_| ())
+}
+
+/// 为安全覆盖生成设备目录内未占用的临时对象名。
+#[cfg(windows)]
+fn free_device_temp_name(parent_vpath: &str, name: &str) -> String {
+    let base = format!("{}.ferroxplorer-upload", name);
+    if child_named(parent_vpath, &base).is_none() {
+        return base;
+    }
+    for n in 2..10_000 {
+        let candidate = format!("{}.{}", base, n);
+        if child_named(parent_vpath, &candidate).is_none() {
+            return candidate;
+        }
+    }
+    format!("{}.{}", base, std::process::id())
 }
 
 #[cfg(windows)]

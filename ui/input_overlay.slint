@@ -103,9 +103,10 @@ export component InputOverlay inherits TouchArea {
     }
 
     double-clicked => {
-        // 双击打开优先于「二次单击重命名」：先取消刚进入的重命名态再打开。
-        // 文件经外部程序打开不经 load_current，不会自动清除 editing-index，
-        // 若不在此显式复位，双击已选中文件会残留重命名输入框。
+        // 双击打开优先于「二次单击重命名」：取消可能刚挂起的重命名再打开。
+        // 挂起由 Rust 延迟提交（约 280ms），双击在此窗口内到达即取消，从而避免
+        // 双击打开时先闪一下重命名输入框。
+        AppState.cancel-click-rename();
         AppState.editing-index = -1;
         AppState.r-editing-index = -1;
         if (root.hit-idx(self.mouse-x, self.mouse-y) >= 0) {
@@ -164,6 +165,8 @@ export component InputOverlay inherits TouchArea {
 
     pointer-event(ev) => {
         if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.down) {
+            // 新的按下取消任何挂起的「单击重命名」：点击别处或换项后不应再进入重命名
+            AppState.cancel-click-rename();
             // 重命名进行中：先提交当前编辑再处理新的点击，避免丢失编辑内容
             if (AppState.editing-index >= 0) {
                 let t = AppState.rename-text;
@@ -221,16 +224,11 @@ export component InputOverlay inherits TouchArea {
                         root.do-open(root.press-idx);
                     } else if (AppState.set-click-rename && !AppState.set-single-click
                                && plain && already-selected) {
-                        // 「选中后单击重命名」：单击「已选中」的单个项（文件或文件夹）进入行内重命名。
-                        // 文件夹亦支持：双击打开由 double-clicked 回调取消重命名后接管，不冲突。
+                        // 「选中后单击重命名」：单击「已选中」的单个项（文件或文件夹）挂起重命名。
+                        // 不立即进入编辑：若该次点击实为双击的前半，double-clicked 会取消挂起并打开，
+                        // 避免双击打开时先闪重命名框。延迟提交由 Rust 用 Timer 实现。
                         root.do-select(root.press-idx, false);
-                        if (root.pane == "left") {
-                            AppState.rename-text = AppState.entries[root.press-idx].name;
-                            AppState.editing-index = root.press-idx;
-                        } else {
-                            AppState.r-rename-text = AppState.r-entries[root.press-idx].name;
-                            AppState.r-editing-index = root.press-idx;
-                        }
+                        AppState.request-click-rename(root.pane, root.press-idx);
                     } else {
                         root.do-select(root.press-idx, ev.modifiers.control);
                     }
@@ -243,6 +241,8 @@ export component InputOverlay inherits TouchArea {
         }
         // 右键：选中并弹出菜单（仅左面板有上下文菜单）。
         if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) {
+            // 右键同样取消挂起的单击重命名，避免菜单期间重命名框弹出
+            AppState.cancel-click-rename();
             if (root.hit-idx(self.mouse-x, self.mouse-y) >= 0) {
                 // 右键未选中项则单选（已选中项之一则保持多选）；左右按各自模型判断
                 if (root.pane == "left") {

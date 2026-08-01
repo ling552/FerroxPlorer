@@ -305,6 +305,10 @@ pub struct AppConfig {
     /// 用户可调设置
     #[serde(default)]
     pub settings: Settings,
+    /// 目录路径 → 布局模式（"list" / "grid" / "dual-list" / "dual-grid"）。
+    /// BTreeMap 保证配置文件输出稳定；旧配置缺字段时自动为空。
+    #[serde(default)]
+    pub folder_layouts: BTreeMap<String, String>,
     /// 绝对路径 -> 标签键集合（"important" / "archive" / "done" / "custom:<id>"）
     #[serde(default)]
     pub tags: BTreeMap<String, Vec<String>>,
@@ -342,6 +346,29 @@ impl AppConfig {
         if let Ok(text) = toml::to_string_pretty(self) {
             let _ = std::fs::write(&path, text);
         }
+    }
+
+    /// 返回目录保存的布局；无记录或损坏值时返回 None。
+    pub fn folder_layout(&self, path: &str) -> Option<&str> {
+        self.folder_layouts
+            .get(path)
+            .map(String::as_str)
+            .filter(|v| matches!(*v, "list" | "grid" | "dual-list" | "dual-grid"))
+    }
+
+    /// 保存目录布局。路径键按 Windows 语义做 ASCII 小写归一化，避免盘符大小写产生重复项。
+    pub fn set_folder_layout(&mut self, path: &str, mode: &str) {
+        let mode = match mode {
+            "grid" => "grid",
+            "dual-list" => "dual-list",
+            "dual-grid" => "dual-grid",
+            _ => "list",
+        };
+        self.folder_layouts.insert(path.to_ascii_lowercase(), mode.to_string());
+    }
+
+    pub fn folder_layout_normalized(&self, path: &str) -> Option<&str> {
+        self.folder_layout(&path.to_ascii_lowercase())
     }
 
     /// 切换某路径的某标签：已有则移除，没有则添加。返回切换后是否含该标签
@@ -423,5 +450,28 @@ impl AppConfig {
     pub fn custom_tag_by_key(&self, key: &str) -> Option<&CustomTag> {
         let id = key.strip_prefix("custom:")?;
         self.custom_tags.iter().find(|t| t.id == id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folder_layout_roundtrip_and_validation() {
+        let mut config = AppConfig::default();
+        assert_eq!(config.folder_layout_normalized("C:\\Work"), None);
+        config.set_folder_layout("C:\\Work", "dual-grid");
+        assert_eq!(config.folder_layout_normalized("c:\\work"), Some("dual-grid"));
+
+        let text = toml::to_string(&config).unwrap();
+        let loaded: AppConfig = toml::from_str(&text).unwrap();
+        assert_eq!(loaded.folder_layout_normalized("C:\\WORK"), Some("dual-grid"));
+    }
+
+    #[test]
+    fn old_config_without_folder_layouts_stays_compatible() {
+        let config: AppConfig = toml::from_str("").unwrap();
+        assert!(config.folder_layouts.is_empty());
     }
 }

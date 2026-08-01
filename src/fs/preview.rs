@@ -270,19 +270,26 @@ fn format_listing(items: &[(String, u64, bool)]) -> String {
 }
 
 /// 文件夹顶层统计：返回 (子文件夹数, 文件数, 顶层文件总字节)。
-/// 仅统计直接子项，不递归，避免大目录卡顿。
-pub fn folder_summary(path: &Path) -> (usize, usize, u64) {    let mut dirs = 0usize;
+/// 使用与目录列表相同的过滤规则，保证详情数量与主视图一致。
+pub fn folder_summary(path: &Path, show_hidden: bool, show_protected: bool) -> (usize, usize, u64) {
+    let mut dirs = 0usize;
     let mut files = 0usize;
     let mut size = 0u64;
     if let Ok(rd) = std::fs::read_dir(path) {
         for entry in rd.flatten() {
+            let meta = match entry.metadata() {
+                Ok(meta) => meta,
+                Err(_) => continue,
+            };
+            let name = entry.file_name().to_string_lossy().to_string();
+            if super::operations::is_hidden_entry(&name, &meta, show_hidden, show_protected) {
+                continue;
+            }
             match entry.file_type() {
                 Ok(ft) if ft.is_dir() => dirs += 1,
                 Ok(_) => {
                     files += 1;
-                    if let Ok(m) = entry.metadata() {
-                        size += m.len();
-                    }
+                    size += meta.len();
                 }
                 Err(_) => {}
             }

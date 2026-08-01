@@ -261,6 +261,11 @@ export global AppState {
     // 提交重命名（右侧独立面板条目）
     callback r-rename-entry(int, string);
     callback request-rename();
+    // 「选中后单击重命名」的防抖：单击已选中项时先挂起，由 Rust 延迟提交。
+    // 若在延迟窗口内发生双击（打开），则取消挂起，避免双击打开时先闪一下重命名框。
+    // pane 为 "left"/"right"，idx 为条目下标。
+    callback request-click-rename(string, int);
+    callback cancel-click-rename();
     // 正在重命名编辑的条目下标（-1 表示无）。全局统一管理，避免各视图各持一份导致状态不同步
     in-out property <int> editing-index: -1;
     // 右面板正在重命名编辑的条目下标（-1 表示无）。与 editing-index 独立，
@@ -539,6 +544,11 @@ export global AppState {
     // 由 Rust 的文件监听线程经事件循环触发（非 UI 直接调用）。
     // 处理器执行「软刷新」：重新读取当前目录，同时保留搜索词与选中项。
     callback auto-refresh();
+
+    // ════════ 设备 / 驱动器拓扑变化 ════════
+    // 由 Rust 的热插拔轮询线程经事件循环触发（非 UI 直接调用）：
+    // 首次枚举完成、以及之后插拔手机 / U 盘时重建侧边栏与「此电脑」视图。
+    callback devices-changed();
 
     // ════════ 同名冲突解决对话框（复制 / 移动遇到目标已存在同名项）════════
     in-out property <bool> conflict-open: false;       // 是否显示对话框

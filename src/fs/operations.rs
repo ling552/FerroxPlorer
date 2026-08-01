@@ -6,8 +6,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 /// 读取目录内容，返回条目列表（文件夹优先，再按名称排序）
-/// `show_hidden` 为 false 时过滤掉以点开头或带 Windows 隐藏属性的项目。
-pub fn read_dir(path: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
+/// `show_hidden` 为 false 时过滤掉带隐藏属性的项目；
+/// `show_protected` 为 false 时过滤掉「受保护的操作系统项目」（HIDDEN+SYSTEM）。
+pub fn read_dir(path: &Path, show_hidden: bool, show_protected: bool) -> io::Result<Vec<Entry>> {
     let mut entries = Vec::new();
     for dirent in fs::read_dir(path)? {
         let dirent = match dirent {
@@ -21,7 +22,7 @@ pub fn read_dir(path: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
         };
         let is_dir = meta.is_dir();
         let name = dirent.file_name().to_string_lossy().to_string();
-        if !show_hidden && is_hidden(&name, &meta) {
+        if should_hide(&name, &meta, show_hidden, show_protected) {
             continue;
         }
         let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
@@ -41,22 +42,68 @@ pub fn read_dir(path: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
     Ok(entries)
 }
 
-/// 判断条目是否为隐藏项：名称以点开头，或带 Windows FILE_ATTRIBUTE_HIDDEN(0x2) 属性。
-fn is_hidden(name: &str, meta: &fs::Metadata) -> bool {
-    if name.starts_with('.') {
+const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
+
+/// 目录视图与文件夹详情共用的过滤规则，语义对齐资源管理器的两个独立选项：
+/// 「显示隐藏的文件」（show_hidden）与「隐藏受保护的操作系统文件」（show_protected）。
+pub(crate) fn should_hide(
+    name: &str,
+    meta: &fs::Metadata,
+    show_hidden: bool,
+    show_protected: bool,
+) -> bool {
+    let attrs = file_attributes(meta);
+    if !show_protected && is_protected_attrs(attrs) {
+        return true;
+    }
+    !show_hidden && is_hidden_name_or_attrs(name, attrs)
+}
+
+/// 详情统计使用的默认过滤规则（与资源管理器及目录视图一致）。
+pub(crate) fn is_hidden_entry(
+    name: &str,
+    meta: &fs::Metadata,
+    show_hidden: bool,
+    show_protected: bool,
+) -> bool {
+    should_hide(name, meta, show_hidden, show_protected)
+}
+
+/// 「受保护的操作系统项目」判定：资源管理器要求 HIDDEN 与 SYSTEM 同时置位。
+/// 只看 SYSTEM 会把资源管理器可见的普通系统文件一并藏掉，导致条目数偏少。
+pub(crate) fn is_protected_attrs(attrs: u32) -> bool {
+    attrs & FILE_ATTRIBUTE_HIDDEN != 0 && attrs & FILE_ATTRIBUTE_SYSTEM != 0
+}
+
+/// 隐藏项判定。Windows 下只认 HIDDEN 属性——点开头是 Unix 约定，
+/// 资源管理器并不因此隐藏（如 .cargo / .config 均正常显示）。
+pub(crate) fn is_hidden_name_or_attrs(name: &str, attrs: u32) -> bool {
+    if attrs & FILE_ATTRIBUTE_HIDDEN != 0 {
         return true;
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
-        if meta.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0 {
-            return true;
-        }
+        let _ = name;
+        false
     }
     #[cfg(not(windows))]
-    let _ = meta;
-    false
+    {
+        name.starts_with('.')
+    }
+}
+
+fn file_attributes(meta: &fs::Metadata) -> u32 {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        meta.file_attributes()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = meta;
+        0
+    }
 }
 
 /// 重命名
@@ -229,6 +276,30 @@ mod tests {
     use super::*;
     use std::env;
 
+    /// 「受保护的操作系统项目」必须 HIDDEN+SYSTEM 同时置位：只看 SYSTEM 会把
+    /// 资源管理器可见的普通系统文件也藏掉，导致条目数比资源管理器少。
+    #[test]
+    fn protected_requires_both_hidden_and_system() {
+        assert!(is_protected_attrs(
+            FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM
+        ));
+        assert!(!is_protected_attrs(FILE_ATTRIBUTE_SYSTEM));
+        assert!(!is_protected_attrs(FILE_ATTRIBUTE_HIDDEN));
+        assert!(!is_protected_attrs(0));
+    }
+
+    /// Windows 下点开头不是隐藏（.cargo/.config 在资源管理器中正常显示），
+    /// 只有 HIDDEN 属性才算隐藏项。
+    #[test]
+    fn dot_prefix_is_not_hidden_on_windows() {
+        assert!(is_hidden_name_or_attrs("anything", FILE_ATTRIBUTE_HIDDEN));
+        assert!(!is_hidden_name_or_attrs("visible.txt", 0));
+        #[cfg(windows)]
+        assert!(!is_hidden_name_or_attrs(".cargo", 0));
+        #[cfg(not(windows))]
+        assert!(is_hidden_name_or_attrs(".cargo", 0));
+    }
+
     // 创建隔离的临时测试目录
     fn temp_dir() -> PathBuf {
         let mut d = env::temp_dir();
@@ -301,7 +372,7 @@ mod tests {
         let dir = temp_dir();
         fs::write(dir.join("a.rs"), b"fn main(){}").unwrap();
         fs::create_dir(dir.join("子目录")).unwrap();
-        let entries = read_dir(&dir, true).unwrap();
+        let entries = read_dir(&dir, true, true).unwrap();
         assert_eq!(entries.len(), 2);
         let rs = entries.iter().find(|e| e.name == "a.rs").unwrap();
         assert_eq!(rs.icon_class, "code");

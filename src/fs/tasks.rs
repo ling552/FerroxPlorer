@@ -164,6 +164,11 @@ pub fn run(
     report: impl Fn(Progress),
     ask: impl Fn(ConflictQuery) -> ConflictReply,
 ) -> TaskResult {
+    // 任一端落在便携设备上：std::fs 不可用，整体改走 WPD 传输
+    if matches!(job.kind, TaskKind::Copy | TaskKind::Move) && job_touches_device(&job) {
+        return run_mtp(job, ctrl, report, ask);
+    }
+
     let op = job.kind.label();
     let target = job.dst.to_string_lossy().to_string();
     // 总量统计：解压按归档条目表（tar 系无法便宜预知，退化为压缩输入字节，
@@ -460,42 +465,16 @@ impl<'a, F: Fn(Progress), G: Fn(ConflictQuery) -> ConflictReply> Runner<'a, F, G
             return;
         }
         self.last_emit = Instant::now();
-
-        let fraction = if self.total_bytes == 0 {
-            if self.total_files <= 0 {
-                // 0 = 无内容；-1 = 总数未知（tar 解压），均无法给出比例
-                0.0
-            } else {
-                self.done_files as f32 / self.total_files as f32
-            }
-        } else {
-            (self.done_bytes as f64 / self.total_bytes as f64) as f32
-        };
-
-        let elapsed = self.start.elapsed().as_secs_f64();
-        let (speed, eta) = if elapsed > 0.3 && self.done_bytes > 0 {
-            let bps = self.done_bytes as f64 / elapsed;
-            let remain = self.total_bytes.saturating_sub(self.done_bytes);
-            let eta_secs = if bps > 0.0 {
-                (remain as f64 / bps) as i64
-            } else {
-                0
-            };
-            (format!("{}/s", human_size(bps as u64)), fmt_eta(eta_secs))
-        } else {
-            ("计算中…".to_string(), "计算中…".to_string())
-        };
-
-        (self.report)(Progress {
-            operation: self.op.to_string(),
-            current_file: current.to_string(),
-            target: self.target.to_string(),
-            completed: self.done_files,
-            total: self.total_files,
-            fraction: fraction.clamp(0.0, 1.0),
-            speed,
-            eta,
-        });
+        (self.report)(make_progress(
+            self.op,
+            current,
+            self.target,
+            self.done_files,
+            self.total_files,
+            self.done_bytes,
+            self.total_bytes,
+            self.start,
+        ));
     }
 
     /// 冲突处理：返回 (结果, 可能重命名后的目标路径)。
@@ -1141,6 +1120,487 @@ fn name_of(p: &Path) -> String {
     p.file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default()
+}
+
+/// 组装一帧进度（比例 / 速度 / 剩余时间）。本地任务与便携设备任务共用。
+#[allow(clippy::too_many_arguments)]
+fn make_progress(
+    op: &str,
+    current: &str,
+    target: &str,
+    done_files: i32,
+    total_files: i32,
+    done_bytes: u64,
+    total_bytes: u64,
+    start: Instant,
+) -> Progress {
+    let fraction = if total_bytes == 0 {
+        if total_files <= 0 {
+            // 0 = 无内容；-1 = 总数未知（tar 解压），均无法给出比例
+            0.0
+        } else {
+            done_files as f32 / total_files as f32
+        }
+    } else {
+        (done_bytes as f64 / total_bytes as f64) as f32
+    };
+
+    let elapsed = start.elapsed().as_secs_f64();
+    let (speed, eta) = if elapsed > 0.3 && done_bytes > 0 {
+        let bps = done_bytes as f64 / elapsed;
+        let remain = total_bytes.saturating_sub(done_bytes);
+        let eta_secs = if bps > 0.0 { (remain as f64 / bps) as i64 } else { 0 };
+        (format!("{}/s", human_size(bps as u64)), fmt_eta(eta_secs))
+    } else {
+        ("计算中…".to_string(), "计算中…".to_string())
+    };
+
+    Progress {
+        operation: op.to_string(),
+        current_file: current.to_string(),
+        target: target.to_string(),
+        completed: done_files,
+        total: total_files,
+        fraction: fraction.clamp(0.0, 1.0),
+        speed,
+        eta,
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  便携设备（MTP/WPD）传输
+//
+//  设备路径不是文件系统路径，std::fs 全线不可用，因此 Copy/Move 只要有一端
+//  落在 device:// 上就整体改走本节：设备↔电脑用 WPD 流传输，设备内部优先用
+//  设备自带的 Move 命令（无需搬数据），不支持时回退「拉到临时目录再推回去」。
+// ══════════════════════════════════════════════════════════════════════
+
+/// 路径是否指向便携设备
+pub fn is_device(p: &Path) -> bool {
+    p.to_string_lossy().starts_with("device://")
+}
+
+/// 任务是否涉及便携设备（任一端在设备上）
+fn job_touches_device(job: &Job) -> bool {
+    is_device(&job.dst) || job.srcs.iter().any(|p| is_device(p))
+}
+
+/// 设备任务的进度状态，同时充当 devices::Sink 接收底层传输回调
+struct MtpRun<'a, F: Fn(Progress)> {
+    ctrl: &'a TaskControl,
+    report: &'a F,
+    op: &'static str,
+    target: String,
+    total_files: i32,
+    total_bytes: u64,
+    done_files: i32,
+    done_bytes: u64,
+    current: String,
+    start: Instant,
+    last_emit: Instant,
+}
+
+impl<'a, F: Fn(Progress)> MtpRun<'a, F> {
+    fn emit(&mut self, force: bool) {
+        if !force && self.last_emit.elapsed() < Duration::from_millis(40) {
+            return;
+        }
+        self.last_emit = Instant::now();
+        (self.report)(make_progress(
+            self.op,
+            &self.current,
+            &self.target,
+            self.done_files,
+            self.total_files,
+            self.done_bytes,
+            self.total_bytes,
+            self.start,
+        ));
+    }
+}
+
+impl<'a, F: Fn(Progress)> super::devices::Sink for MtpRun<'a, F> {
+    fn begin_file(&mut self, name: &str, _size: u64) {
+        self.current = name.to_string();
+        self.emit(true);
+    }
+
+    fn advance(&mut self, bytes: u64) -> bool {
+        self.done_bytes += bytes;
+        self.ctrl.wait_if_paused();
+        if self.ctrl.is_cancelled() {
+            return false;
+        }
+        self.emit(false);
+        true
+    }
+
+    fn end_file(&mut self) {
+        self.done_files += 1;
+        self.emit(true);
+    }
+}
+
+/// 在设备目录下为 `name` 找一个未被占用的名称（「文件 (2).txt」）
+fn free_name_on_device(parent_vpath: &str, name: &str) -> String {
+    let (stem, ext) = match name.rsplit_once('.') {
+        // 前导点的隐藏文件（".gitignore"）整体视为名称，不拆扩展名
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{}", e)),
+        _ => (name.to_string(), String::new()),
+    };
+    for n in 2..1000 {
+        let candidate = format!("{} ({}){}", stem, n, ext);
+        if super::devices::child_named(parent_vpath, &candidate).is_none() {
+            return candidate;
+        }
+    }
+    format!("{} (副本){}", stem, ext)
+}
+
+/// 顶层同名冲突的处置结果
+enum DevPlan {
+    /// 跳过该项
+    Skip,
+    /// 继续写入；Some(名称) 表示改名写入（「保留两者」）
+    Write(Option<String>),
+}
+
+/// 执行涉及便携设备的复制 / 移动任务
+fn run_mtp(
+    job: Job,
+    ctrl: Arc<TaskControl>,
+    report: impl Fn(Progress),
+    ask: impl Fn(ConflictQuery) -> ConflictReply,
+) -> TaskResult {
+    use super::devices;
+
+    // 设备访问要求本线程已初始化 COM；任务线程是裸 spawn 出来的，须自行初始化。
+    // 重复调用返回 S_FALSE，忽略即可。
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::Com::{
+            CoInitializeEx, COINIT_DISABLE_OLE1DDE, COINIT_MULTITHREADED,
+        };
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED | COINIT_DISABLE_OLE1DDE);
+    }
+
+    let op = job.kind.label();
+    let is_move = job.kind == TaskKind::Move;
+    let dst_s = job.dst.to_string_lossy().to_string();
+    let dst_is_dev = devices::is_device_path(&dst_s);
+    let target = if dst_is_dev {
+        super::virtualfs::friendly_title(&dst_s)
+    } else {
+        dst_s.clone()
+    };
+
+    let mut run = MtpRun {
+        ctrl: &ctrl,
+        report: &report,
+        op,
+        target,
+        total_files: 0,
+        total_bytes: 0,
+        done_files: 0,
+        done_bytes: 0,
+        current: String::new(),
+        start: Instant::now(),
+        last_emit: Instant::now() - Duration::from_secs(1),
+    };
+    run.current = "统计中…".to_string();
+    run.emit(true);
+
+    // 总量统计：设备侧要逐层枚举（慢），本地侧沿用普通扫描
+    for src in &job.srcs {
+        if ctrl.is_cancelled() {
+            return TaskResult {
+                ok: 0,
+                skipped: 0,
+                error: String::new(),
+                cancelled: true,
+            };
+        }
+        if is_device(src) {
+            let (f, b) = devices::tree_totals(&src.to_string_lossy());
+            run.total_files += f;
+            run.total_bytes += b;
+        } else {
+            let (f, b) = scan(std::slice::from_ref(src));
+            run.total_files += f;
+            run.total_bytes += b;
+        }
+    }
+    run.current = "准备中…".to_string();
+    run.emit(true);
+
+    let mut ok = 0;
+    let mut skipped = 0;
+    let mut error = String::new();
+    let mut remembered: Option<ConflictDecision> = None;
+
+    for src in &job.srcs {
+        if ctrl.is_cancelled() {
+            return TaskResult {
+                ok,
+                skipped,
+                error,
+                cancelled: true,
+            };
+        }
+        let src_s = src.to_string_lossy().to_string();
+        let src_is_dev = devices::is_device_path(&src_s);
+
+        // 源项名称：设备侧读对象属性，本地侧取文件名
+        let name = if src_is_dev {
+            devices::object_info(&src_s)
+                .map(|(n, _, _)| n)
+                .unwrap_or_default()
+        } else {
+            name_of(src)
+        };
+        if name.trim().is_empty() {
+            continue;
+        }
+
+        let plan = plan_for(
+            &name,
+            src,
+            src_is_dev,
+            &job.dst,
+            dst_is_dev,
+            op,
+            &mut remembered,
+            &ask,
+        );
+        let as_name = match plan {
+            DevPlan::Skip => {
+                skipped += 1;
+                // 跳过项计入进度，避免比例卡在不到 100%
+                if src_is_dev {
+                    let (f, b) = devices::tree_totals(&src_s);
+                    run.done_files += f;
+                    run.done_bytes += b;
+                } else {
+                    let (f, b) = scan(std::slice::from_ref(src));
+                    run.done_files += f;
+                    run.done_bytes += b;
+                }
+                run.emit(true);
+                continue;
+            }
+            DevPlan::Write(n) => n,
+        };
+
+        let res = transfer_one(
+            &src_s, src, src_is_dev, &job.dst, &dst_s, dst_is_dev, as_name, is_move, &mut run,
+        );
+        match res {
+            Ok(()) => ok += 1,
+            Err(e) if e == "已取消" => {
+                return TaskResult {
+                    ok,
+                    skipped,
+                    error,
+                    cancelled: true,
+                }
+            }
+            Err(e) => error = e,
+        }
+    }
+
+    run.current.clear();
+    run.emit(true);
+    TaskResult {
+        ok,
+        skipped,
+        error,
+        cancelled: false,
+    }
+}
+
+/// 顶层同名冲突：查目标端是否已有同名项，有则询问用户并执行前置动作
+#[allow(clippy::too_many_arguments)]
+fn plan_for(
+    name: &str,
+    src: &Path,
+    src_is_dev: bool,
+    dst: &Path,
+    dst_is_dev: bool,
+    op: &str,
+    remembered: &mut Option<ConflictDecision>,
+    ask: &impl Fn(ConflictQuery) -> ConflictReply,
+) -> DevPlan {
+    use super::devices;
+
+    let dst_s = dst.to_string_lossy().to_string();
+    // 目标端已存在的同名项：(设备虚拟路径或本地路径, 是否目录, 大小)
+    let existing: Option<(String, bool, u64)> = if dst_is_dev {
+        devices::child_named(&dst_s, name)
+    } else {
+        let p = dst.join(name);
+        if p.exists() {
+            let meta = std::fs::metadata(&p).ok();
+            Some((
+                p.to_string_lossy().to_string(),
+                meta.as_ref().map(|m| m.is_dir()).unwrap_or(false),
+                meta.map(|m| m.len()).unwrap_or(0),
+            ))
+        } else {
+            None
+        }
+    };
+    let Some((existing_path, existing_is_dir, existing_size)) = existing else {
+        return DevPlan::Write(None);
+    };
+
+    let decision = match *remembered {
+        Some(d) => d,
+        None => {
+            // 源信息：设备端没有文件系统元数据，只给大小
+            let src_info = if src_is_dev {
+                match devices::object_info(&src.to_string_lossy()) {
+                    Some((_, true, _)) => "文件夹 · 便携设备".to_string(),
+                    Some((_, false, sz)) => format!("{} · 便携设备", human_size(sz)),
+                    None => "便携设备".to_string(),
+                }
+            } else {
+                describe(src)
+            };
+            let dst_info = if dst_is_dev {
+                if existing_is_dir {
+                    "文件夹 · 便携设备".to_string()
+                } else {
+                    format!("{} · 便携设备", human_size(existing_size))
+                }
+            } else {
+                describe(Path::new(&existing_path))
+            };
+            let reply = ask(ConflictQuery {
+                name: name.to_string(),
+                operation: op.to_string(),
+                src_info,
+                dst_info,
+                is_dir: existing_is_dir,
+            });
+            if reply.apply_all {
+                *remembered = Some(reply.decision);
+            }
+            reply.decision
+        }
+    };
+
+    match decision {
+        ConflictDecision::Skip => DevPlan::Skip,
+        ConflictDecision::Rename => DevPlan::Write(Some(if dst_is_dev {
+            free_name_on_device(&dst_s, name)
+        } else {
+            name_of(&resolve_conflict(dst.join(name)))
+        })),
+        ConflictDecision::Overwrite => {
+            if dst_is_dev {
+                let _ = devices::delete(&[existing_path]);
+            } else {
+                let p = Path::new(&existing_path);
+                if existing_is_dir {
+                    let _ = fs::remove_dir_all(p);
+                } else {
+                    let _ = fs::remove_file(p);
+                }
+            }
+            DevPlan::Write(None)
+        }
+    }
+}
+
+/// 搬运单个顶层项。四种方向：设备→本地、本地→设备、同设备内、跨设备。
+#[allow(clippy::too_many_arguments)]
+fn transfer_one<F: Fn(Progress)>(
+    src_s: &str,
+    src: &Path,
+    src_is_dev: bool,
+    dst: &Path,
+    dst_s: &str,
+    dst_is_dev: bool,
+    as_name: Option<String>,
+    is_move: bool,
+    run: &mut MtpRun<F>,
+) -> Result<(), String> {
+    use super::devices;
+    let as_name_ref = as_name.as_deref();
+
+    match (src_is_dev, dst_is_dev) {
+        // 设备 → 电脑
+        (true, false) => {
+            devices::pull_tree(src_s, dst, as_name_ref, run)?;
+            if is_move {
+                devices::delete(&[src_s.to_string()])?;
+            }
+        }
+        // 电脑 → 设备
+        (false, true) => {
+            devices::push_tree(src, dst_s, as_name_ref, run)?;
+            if is_move {
+                if src.is_dir() {
+                    fs::remove_dir_all(src).map_err(|e| format!("删除源目录失败：{}", e))?;
+                } else {
+                    fs::remove_file(src).map_err(|e| format!("删除源文件失败：{}", e))?;
+                }
+            }
+        }
+        // 设备 → 设备
+        (true, true) => {
+            let same_device = devices::device_id_of(src_s) == devices::device_id_of(dst_s);
+            // 同设备且不需要改名：优先让设备自己搬（不经过 USB 传数据，秒完成）
+            if same_device && is_move && as_name_ref.is_none() {
+                // 必须在移动前统计：move_objects 成功后源对象已不存在，tree_totals 会返回 0
+                let (f, b) = devices::tree_totals(src_s);
+                if devices::move_objects(&[src_s.to_string()], dst_s).is_ok() {
+                    run.done_files += f;
+                    run.done_bytes += b;
+                    run.emit(true);
+                    return Ok(());
+                }
+                // 设备不支持 Move 命令：落到下面的中转路径
+            }
+            // 中转：先拉到临时目录，再推到目标设备目录。
+            // 暂存目录带进程 ID，避免与其它会话的中转冲突
+            let staging = std::env::temp_dir().join(format!(
+                "FerroxPlorer_mtp_xfer_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&staging);
+            fs::create_dir_all(&staging).map_err(|e| format!("创建暂存目录失败：{}", e))?;
+            let result = (|| -> Result<(), String> {
+                devices::pull_tree(src_s, &staging, None, run)?;
+                let staged = fs::read_dir(&staging)
+                    .map_err(|e| format!("读取暂存目录失败：{}", e))?
+                    .flatten()
+                    .next()
+                    .ok_or("暂存目录为空")?
+                    .path();
+                // 推送阶段的字节已在拉取阶段计入，这里不重复累加进度
+                devices::push_tree(&staged, dst_s, as_name_ref, &mut NoProgress)?;
+                if is_move {
+                    devices::delete(&[src_s.to_string()])?;
+                }
+                Ok(())
+            })();
+            let _ = fs::remove_dir_all(&staging);
+            result?;
+        }
+        // 两端都不在设备上：不会走到这里（run 只在涉及设备时分流）
+        (false, false) => return Err("非设备传输".to_string()),
+    }
+    Ok(())
+}
+
+/// 中转推送阶段用的空进度接收器（字节已在拉取阶段计过一次）
+struct NoProgress;
+impl super::devices::Sink for NoProgress {
+    fn begin_file(&mut self, _name: &str, _size: u64) {}
+    fn advance(&mut self, _bytes: u64) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

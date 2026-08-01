@@ -393,7 +393,7 @@ export component FileList inherits Rectangle {
                         x: root.pad;
                         width: root.namew(row.width);
                         height: 100%;
-                        clip: true;
+                        clip: !entry.selected;
                         FileIcon {
                             x: 0px;
                             y: (parent.height - self.height) / 2;
@@ -439,7 +439,7 @@ export component FileList inherits Rectangle {
                                 vertical-alignment: center;
                             }
                         }
-                        if AppState.editing-index != idx: Text {
+                        if AppState.editing-index != idx: name-text := Text {
                             x: root.name-indent;
                             width: parent.width - root.name-indent;
                             height: 100%;
