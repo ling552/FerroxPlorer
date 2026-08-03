@@ -412,7 +412,7 @@ mod win_impl {
     }
 
     fn control_class() -> Vec<u16> {
-        "FerroxVideoControls".encode_utf16().chain(std::iter::once(0)).collect()
+        "FileFilesOneVideoControls".encode_utf16().chain(std::iter::once(0)).collect()
     }
 
     unsafe fn create_controls_window(

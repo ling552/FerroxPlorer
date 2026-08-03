@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn test_read_text_head() {
         let mut p = std::env::temp_dir();
-        p.push(format!("ferrox_prev_{}.txt", std::process::id()));
+        p.push(format!("filefiles_prev_{}.txt", std::process::id()));
         std::fs::write(&p, b"hello world").unwrap();
         let t = read_text_head(&p, 1024);
         assert!(t.contains("hello world"));
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn test_read_text_head_truncate() {
         let mut p = std::env::temp_dir();
-        p.push(format!("ferrox_prev_big_{}.txt", std::process::id()));
+        p.push(format!("filefiles_prev_big_{}.txt", std::process::id()));
         std::fs::write(&p, vec![b'x'; 5000]).unwrap();
         let t = read_text_head(&p, 100);
         assert!(t.contains("仅显示开头部分"));
@@ -338,7 +338,7 @@ mod tests {
     #[test]
     fn test_binary_detect() {
         let mut p = std::env::temp_dir();
-        p.push(format!("ferrox_prev_bin_{}.dat", std::process::id()));
+        p.push(format!("filefiles_prev_bin_{}.dat", std::process::id()));
         std::fs::write(&p, [0u8, 1, 2, 3, 0, 5]).unwrap();
         let t = read_text_head(&p, 1024);
         assert!(t.contains("二进制"));

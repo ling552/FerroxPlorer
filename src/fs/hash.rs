@@ -91,7 +91,7 @@ mod tests {
     fn test_known_hashes() {
         // "abc" 的标准哈希值
         let mut p = std::env::temp_dir();
-        p.push(format!("ferrox_hash_{}.txt", std::process::id()));
+        p.push(format!("filefiles_hash_{}.txt", std::process::id()));
         fs::write(&p, b"abc").unwrap();
 
         assert_eq!(
@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn test_verify() {
         let mut p = std::env::temp_dir();
-        p.push(format!("ferrox_verify_{}.txt", std::process::id()));
+        p.push(format!("filefiles_verify_{}.txt", std::process::id()));
         fs::write(&p, b"abc").unwrap();
 
         // 大小写与首尾空白不敏感

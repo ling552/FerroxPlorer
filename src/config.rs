@@ -1,5 +1,5 @@
 //! 应用配置持久化：布局尺寸与文件标签
-//! 存储位置：%APPDATA%/FerroxPlorer/config.toml
+//! 存储位置：%APPDATA%/FileFiles One/config.toml
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -322,7 +322,7 @@ pub struct AppConfig {
 
 /// 配置文件完整路径
 fn config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("FerroxPlorer").join("config.toml"))
+    dirs::config_dir().map(|d| d.join("FileFiles One").join("config.toml"))
 }
 
 impl AppConfig {

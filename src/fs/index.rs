@@ -2,7 +2,7 @@
 //!
 //! - 重建在后台线程执行，进度经回调上报（fraction 按顶层子目录完成数估算，
 //!   与 UI 进度条对应；条数与当前目录用于副标题文案）。
-//! - 索引持久化到 %APPDATA%/FerroxPlorer/index.txt，启动后首次搜索时惰性加载。
+//! - 索引持久化到 %APPDATA%/FileFiles One/index.txt，启动后首次搜索时惰性加载。
 //! - 搜索：给定目录前缀 + 关键字，返回构造好的 Entry 列表（上限截断）。
 
 use super::metadata::{classify, unix_ts, Entry};
@@ -40,7 +40,7 @@ pub fn is_rebuilding() -> bool {
 
 /// 索引文件路径（与 config.toml 同目录）
 fn index_file() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("FerroxPlorer").join("index.txt"))
+    dirs::config_dir().map(|d| d.join("FileFiles One").join("index.txt"))
 }
 
 /// 磁盘上是否已有索引文件

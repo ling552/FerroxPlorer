@@ -1,9 +1,9 @@
-# FerroxPlorer
+# FileFiles One
 
 现代化 Windows 桌面文件管理器,使用 **Rust + Slint** 实现。
 
-[![Platform](https://img.shields.io/badge/platform-Windows-blue)](https://github.com/ling552/FerroxPlorer/releases)
-[![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/ling552/FerroxPlorer/blob/main/LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows-blue)](https://github.com/ling552/FileFiles-One/releases)
+[![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/ling552/FileFiles-One/blob/main/LICENSE)
 
 ![ico](icon.webp)
 
@@ -22,7 +22,7 @@
 
 ## 安装
 
-从 [Releases](../../releases) 页面下载最新的 `FerroxPlorer-Setup-x.y.z.exe` 安装程序。
+从 [Releases](../../releases) 页面下载最新的 `FileFiles-One-Setup-x.y.z.exe` 安装程序。
 
 ## 从源码构建
 
@@ -32,7 +32,7 @@
 cargo build --release
 ```
 
-产物位于 `target/release/ferroxplorer.exe`。
+产物位于 `target/release/filefiles-one.exe`。
 
 ## 恢复默认文件管理器
 
@@ -43,7 +43,7 @@ cd C:\Users\<your-name>\Downloads    #此处改为脚本下载地址
 powershell -ExecutionPolicy Bypass -File .\Restore-DefaultFileManager.ps1
 ```
 
-脚本仅在关联仍带有 `FerroxPlorerOwner` 标记、且命令精确为 FerroxPlorer 的受管格式时恢复备份；已改用其它文件管理器或命令被修改的项会跳过，不会覆盖。
+脚本仅在关联仍带有 `FileFilesOneOwner` 标记、且命令精确为 FileFiles One 的受管格式时恢复备份；已改用其它文件管理器或命令被修改的项会跳过，不会覆盖。
 
 ## 许可证
 

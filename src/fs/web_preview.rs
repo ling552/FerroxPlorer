@@ -117,7 +117,7 @@ pub fn url_for(content: &WebContent) -> Option<String> {
         let raw = std::fs::read_to_string(path).ok()?;
         format!(r#"<base href="{}">{}"#, base, raw)
     };
-    let tmp = std::env::temp_dir().join("ferroxplorer_preview.html");
+    let tmp = std::env::temp_dir().join("filefiles-one_preview.html");
     std::fs::write(&tmp, html).ok()?;
     Some(file_url(&tmp.to_string_lossy()))
 }
@@ -207,7 +207,7 @@ mod win_impl {
 
         // 首次进入：异步创建环境 → 控制器（回调经 UI 线程消息循环送达）
         let user_data = dirs::data_local_dir()
-            .map(|d| d.join("FerroxPlorer").join("WebView2"))
+            .map(|d| d.join("FileFiles One").join("WebView2"))
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
         let parent_hwnd = HWND(parent as *mut core::ffi::c_void);

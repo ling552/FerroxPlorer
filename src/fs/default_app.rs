@@ -1,7 +1,7 @@
 //! 「设为默认文件管理器」：通过 HKCU 注册表接管文件夹、驱动器与「此电脑」入口。
 //!
 //! 接管前会在本应用专属注册表键中备份原 command 值，并在写入的 command 键上留下
-//! 所有权标记。关闭开关或卸载时只恢复仍由 FerroxPlorer 持有的项；若用户后来改用
+//! 所有权标记。关闭开关或卸载时只恢复仍由 FileFiles One 持有的项；若用户后来改用
 //! 其它文件管理器，则不会删除或覆盖对方的注册表设置。
 
 #[cfg(windows)]
@@ -16,9 +16,9 @@ const THIS_PC_KEY: &str =
 const THIS_PC_OPEN_KEY: &str =
     r"Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\open";
 #[cfg(windows)]
-const BACKUP_ROOT: &str = r"Software\FerroxPlorer\DefaultFileManager";
+const BACKUP_ROOT: &str = r"Software\FileFiles One\DefaultFileManager";
 #[cfg(windows)]
-const OWNER_VALUE: &str = "FerroxPlorerOwner";
+const OWNER_VALUE: &str = "FileFilesOneOwner";
 
 #[cfg(windows)]
 struct Target {
@@ -75,7 +75,7 @@ pub fn set_default(enable: bool) -> std::io::Result<()> {
     }
 }
 
-/// 检查完整状态。只有带本应用所有权记录的缺失项或旧 FerroxPlorer 路径可自动修复；
+/// 检查完整状态。只有带本应用所有权记录的缺失项或旧 FileFiles One 路径可自动修复；
 /// 若任一入口已指向其它程序，返回 External，调用方不得静默夺回关联。
 pub fn registration_state() -> RegistrationState {
     #[cfg(windows)]
@@ -87,7 +87,7 @@ pub fn registration_state() -> RegistrationState {
             .and_then(|key| key.get_value::<u32, _>("Active").ok())
             == Some(1);
         if !active {
-            // v0.2.0 及更早版本没有备份/所有权标记；四项都仍指向 FerroxPlorer 时，
+            // v0.2.0 及更早版本没有备份/所有权标记；四项都仍指向 FileFiles One 时，
             // 允许一次性迁移到新模型。原始 HKCU 状态已不可知，迁移时按系统默认回落处理。
             return if legacy_registration(&hkcu) {
                 RegistrationState::Repairable
@@ -114,7 +114,7 @@ pub fn registration_state() -> RegistrationState {
             if owner && command_matches(&actual, &expected) && delegate.as_deref() == Some("") {
                 continue;
             }
-            if owner && command_targets_ferroxplorer(&actual, target.with_target) {
+            if owner && command_targets_filefiles_one(&actual, target.with_target) {
                 needs_repair = true;
                 continue;
             }
@@ -147,7 +147,7 @@ fn command_matches(actual: &str, expected: &str) -> bool {
 }
 
 #[cfg(windows)]
-fn command_targets_ferroxplorer(command: &str, with_target: bool) -> bool {
+fn command_targets_filefiles_one(command: &str, with_target: bool) -> bool {
     let Some(rest) = command.strip_prefix('"') else {
         return false;
     };
@@ -157,7 +157,7 @@ fn command_targets_ferroxplorer(command: &str, with_target: bool) -> bool {
     if !exe
         .rsplit(['\\', '/'])
         .next()
-        .is_some_and(|name| name.eq_ignore_ascii_case("ferroxplorer.exe"))
+        .is_some_and(|name| name.eq_ignore_ascii_case("filefiles-one.exe"))
     {
         return false;
     }
@@ -174,7 +174,7 @@ fn legacy_registration(hkcu: &RegKey) -> bool {
         hkcu.open_subkey(format!(r"{}\command", target.verb_key))
             .ok()
             .and_then(|command| command.get_value::<String, _>("").ok())
-            .is_some_and(|command| command_targets_ferroxplorer(&command, target.with_target))
+            .is_some_and(|command| command_targets_filefiles_one(&command, target.with_target))
     })
 }
 
@@ -229,7 +229,7 @@ fn enable_win() -> std::io::Result<()> {
         == Some(1);
 
     if !already_active {
-        // 旧版四项都指向 FerroxPlorer 时，按“此前没有用户自定义 HKCU 动词”迁移；
+        // 旧版四项都指向 FileFiles One 时，按“此前没有用户自定义 HKCU 动词”迁移；
         // 新的用户操作则完整备份当前值。
         let legacy_migration = legacy_registration(&hkcu);
         let _ = hkcu.delete_subkey_all(BACKUP_ROOT);
@@ -304,7 +304,7 @@ fn disable_win() -> std::io::Result<()> {
         };
         let actual: String = command.get_value("").unwrap_or_default();
         let owner = command.get_value::<u32, _>(OWNER_VALUE).unwrap_or(0) == 1;
-        if !owner || !command_targets_ferroxplorer(&actual, target.with_target) {
+        if !owner || !command_targets_filefiles_one(&actual, target.with_target) {
             continue;
         }
 
@@ -369,57 +369,57 @@ fn notify_shell_associations_changed() {
 
 #[cfg(all(test, windows))]
 mod tests {
-    use super::{command_matches, command_targets_ferroxplorer, expected_command};
+    use super::{command_matches, command_targets_filefiles_one, expected_command};
 
     #[test]
     fn directory_command_requires_exact_path_and_target() {
-        let expected = expected_command(r"C:\Apps\FerroxPlorer\ferroxplorer.exe", true);
+        let expected = expected_command(r"C:\Apps\FileFiles One\filefiles-one.exe", true);
         assert!(command_matches(
-            r#""C:\Apps\FerroxPlorer\ferroxplorer.exe" "%1""#,
+            r#""C:\Apps\FileFiles One\filefiles-one.exe" "%1""#,
             &expected
         ));
         assert!(!command_matches(
-            r#""C:\Apps\FerroxPlorer\ferroxplorer.exe""#,
+            r#""C:\Apps\FileFiles One\filefiles-one.exe""#,
             &expected
         ));
         assert!(!command_matches(
-            r#""C:\Apps\FerroxPlorer\ferroxplorer.exe.old" "%1""#,
+            r#""C:\Apps\FileFiles One\filefiles-one.exe.old" "%1""#,
             &expected
         ));
     }
 
     #[test]
     fn ownership_check_requires_exact_managed_command() {
-        assert!(command_targets_ferroxplorer(
-            r#""D:\Old\FerroxPlorer.exe" "%1""#,
+        assert!(command_targets_filefiles_one(
+            r#""D:\Old\filefiles-one.exe" "%1""#,
             true
         ));
-        assert!(command_targets_ferroxplorer(
-            r#""D:\Old\FerroxPlorer.exe""#,
+        assert!(command_targets_filefiles_one(
+            r#""D:\Old\filefiles-one.exe""#,
             false
         ));
-        assert!(!command_targets_ferroxplorer(
-            r#""D:\Old\FerroxPlorer.exe" "%1" --residue""#,
+        assert!(!command_targets_filefiles_one(
+            r#""D:\Old\filefiles-one.exe" "%1" --residue""#,
             true
         ));
-        assert!(!command_targets_ferroxplorer(
-            r#""D:\Old\FerroxPlorer.exe" "%1""#,
+        assert!(!command_targets_filefiles_one(
+            r#""D:\Old\filefiles-one.exe" "%1""#,
             false
         ));
-        assert!(!command_targets_ferroxplorer(
+        assert!(!command_targets_filefiles_one(
             r#""C:\Tools\OtherExplorer.exe" "%1""#,
             true
         ));
-        assert!(!command_targets_ferroxplorer(
-            r#""C:\Tools\FerroxPlorer.exe.bak" "%1""#,
+        assert!(!command_targets_filefiles_one(
+            r#""C:\Tools\filefiles-one.exe.bak" "%1""#,
             true
         ));
-        assert!(!command_targets_ferroxplorer(
-            r#""C:\Tools\OtherExplorer.exe" "ferroxplorer.exe""#,
+        assert!(!command_targets_filefiles_one(
+            r#""C:\Tools\OtherExplorer.exe" "filefiles-one.exe""#,
             true
         ));
-        assert!(!command_targets_ferroxplorer(
-            r#"C:\Apps\FerroxPlorer.exe "%1""#,
+        assert!(!command_targets_filefiles_one(
+            r#"C:\Apps\filefiles-one.exe "%1""#,
             true
         ));
     }

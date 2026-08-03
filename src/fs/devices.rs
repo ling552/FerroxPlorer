@@ -294,7 +294,7 @@ fn open_device(
 
     let client: IPortableDeviceValues =
         unsafe { CoCreateInstance(&PortableDeviceValues, None, CLSCTX_INPROC_SERVER)? };
-    let app_name = to_wide("FerroxPlorer");
+    let app_name = to_wide("FileFiles One");
     unsafe { client.SetStringValue(&WPD_CLIENT_NAME, PCWSTR(app_name.as_ptr()))? };
 
     let device: IPortableDevice =
@@ -466,7 +466,7 @@ fn copy_to_temp_win(vpath: &str) -> Result<std::path::PathBuf, String> {
         .unwrap_or_default();
     let fname = sanitize_filename(&name, &obj);
 
-    let dir = std::env::temp_dir().join("FerroxPlorer_mtp");
+    let dir = std::env::temp_dir().join("FileFiles One_mtp");
     let _ = std::fs::create_dir_all(&dir);
     let out_path = dir.join(&fname);
     let mut file = std::fs::File::create(&out_path)
@@ -1294,7 +1294,7 @@ fn push_in(
 /// 为安全覆盖生成设备目录内未占用的临时对象名。
 #[cfg(windows)]
 fn free_device_temp_name(parent_vpath: &str, name: &str) -> String {
-    let base = format!("{}.ferroxplorer-upload", name);
+    let base = format!("{}.filefiles-one-upload", name);
     if child_named(parent_vpath, &base).is_none() {
         return base;
     }

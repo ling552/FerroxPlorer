@@ -195,7 +195,7 @@ mod tests {
     fn test_bad_pe() {
         // 扩展名像 PE 但内容不是 → Error
         let mut p = std::env::temp_dir();
-        p.push(format!("ferrox_sig_{}.exe", std::process::id()));
+        p.push(format!("filefiles_sig_{}.exe", std::process::id()));
         std::fs::write(&p, b"not a real exe").unwrap();
         assert!(matches!(detect(&p), SignStatus::Error(_)));
         std::fs::remove_file(&p).ok();

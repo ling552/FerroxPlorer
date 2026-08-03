@@ -304,7 +304,7 @@ mod tests {
     fn temp_dir() -> PathBuf {
         let mut d = env::temp_dir();
         let unique = format!(
-            "ferrox_test_{}_{}",
+            "filefiles_test_{}_{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

@@ -1,12 +1,12 @@
-# FerroxPlorer default file manager recovery script.
+# FileFiles One default file manager recovery script.
 # It only restores HKCU associations which are still marked as owned by
-# FerroxPlorer and still point to FerroxPlorer.exe. Other file managers are
+# FileFiles One and still point to FileFiles One.exe. Other file managers are
 # never overwritten.
 
 $ErrorActionPreference = 'Stop'
 
-$backupPath = 'Software\FerroxPlorer\DefaultFileManager'
-$ownerValue = 'FerroxPlorerOwner'
+$backupPath = 'Software\FileFiles One\DefaultFileManager'
+$ownerValue = 'FileFilesOneOwner'
 $targets = @(
     [PSCustomObject]@{ Id = 'Directory'; VerbKey = 'Software\Classes\Directory\shell\open'; WithTarget = $true },
     [PSCustomObject]@{ Id = 'Drive'; VerbKey = 'Software\Classes\Drive\shell\open'; WithTarget = $true },
@@ -33,12 +33,12 @@ function Restore-Value(
     }
 }
 
-function Is-FerroxPlorerCommand([string]$command, [bool]$withTarget) {
+function Is-FileFilesOneCommand([string]$command, [bool]$withTarget) {
     $pattern = if ($withTarget) { '^"([^"]+)" "%1"$' } else { '^"([^"]+)"$' }
     if ($command -notmatch $pattern) {
         return $false
     }
-    return [System.IO.Path]::GetFileName($Matches[1]).Equals('ferroxplorer.exe', [System.StringComparison]::OrdinalIgnoreCase)
+    return [System.IO.Path]::GetFileName($Matches[1]).Equals('filefiles-one.exe', [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Remove-EmptySubKey([Microsoft.Win32.RegistryKey]$parent, [string]$child) {
@@ -52,7 +52,7 @@ function Remove-EmptySubKey([Microsoft.Win32.RegistryKey]$parent, [string]$child
 $hkcu = [Microsoft.Win32.Registry]::CurrentUser
 $backupRoot = $hkcu.OpenSubKey($backupPath, $false)
 if ($null -eq $backupRoot -or -not (Get-Flag $backupRoot 'Active')) {
-    Write-Host 'No FerroxPlorer default-file-manager backup was found. No registry changes were made.' -ForegroundColor Yellow
+    Write-Host 'No FileFiles One default-file-manager backup was found. No registry changes were made.' -ForegroundColor Yellow
     exit 0
 }
 
@@ -70,8 +70,8 @@ foreach ($target in $targets) {
     }
 
     $commandText = [string]$command.GetValue('', '')
-    if (-not (Get-Flag $command $ownerValue) -or -not (Is-FerroxPlorerCommand $commandText $target.WithTarget)) {
-        Write-Host "$($target.Id): not owned by FerroxPlorer; kept unchanged." -ForegroundColor Yellow
+    if (-not (Get-Flag $command $ownerValue) -or -not (Is-FileFilesOneCommand $commandText $target.WithTarget)) {
+        Write-Host "$($target.Id): not owned by FileFiles One; kept unchanged." -ForegroundColor Yellow
         $command.Close()
         $skipped++
         continue
@@ -134,8 +134,8 @@ if ($failed -eq 0 -and $skipped -eq 0) {
 }
 
 if ($restored -gt 0) {
-    Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class FerroxPlorerShellNotify { [DllImport("shell32.dll")] public static extern void SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2); }'
-    [FerroxPlorerShellNotify]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+    Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class FileFilesOneShellNotify { [DllImport("shell32.dll")] public static extern void SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2); }'
+    [FileFilesOneShellNotify]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
     Write-Host 'Windows file associations were refreshed.' -ForegroundColor Green
 }
 

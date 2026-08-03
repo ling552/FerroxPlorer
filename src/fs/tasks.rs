@@ -1565,7 +1565,7 @@ fn transfer_one<F: Fn(Progress)>(
             // 中转：先拉到临时目录，再推到目标设备目录。
             // 暂存目录带进程 ID，避免与其它会话的中转冲突
             let staging = std::env::temp_dir().join(format!(
-                "FerroxPlorer_mtp_xfer_{}",
+                "FileFiles One_mtp_xfer_{}",
                 std::process::id()
             ));
             let _ = fs::remove_dir_all(&staging);
@@ -1612,7 +1612,7 @@ mod tests {
     fn temp_dir(tag: &str) -> PathBuf {
         let mut d = env::temp_dir();
         let unique = format!(
-            "ferrox_task_{}_{}_{}",
+            "filefiles_task_{}_{}_{}",
             tag,
             std::process::id(),
             std::time::SystemTime::now()

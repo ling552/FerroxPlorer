@@ -1,4 +1,4 @@
-// FerroxPlorer 入口：初始化主窗口、多标签页、绑定全部回调到真实文件系统
+// FileFiles One 入口：初始化主窗口、多标签页、绑定全部回调到真实文件系统
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
@@ -1986,7 +1986,7 @@ fn bind_right_pane(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
 
 /// 打开文件，并把被启动程序的工作目录设为文件所在目录。
 /// 这样脚本/程序用相对路径读取同级文件（如 a.py 读取 config.json）才能命中，
-/// 否则会继承 FerroxPlorer 自身的工作目录导致“找不到文件”。
+/// 否则会继承 FileFiles One 自身的工作目录导致“找不到文件”。
 #[cfg(windows)]
 fn open_with_cwd(path: &str) {
     use std::ffi::OsStr;

@@ -53,7 +53,7 @@ jobs:
           if (-not $dumpbin) {
             throw "未找到 Visual Studio dumpbin.exe，无法验证运行时依赖"
           }
-          $imports = & $dumpbin /dependents target\release\ferroxplorer.exe | Out-String
+          $imports = & $dumpbin /dependents target\release\filefiles-one.exe | Out-String
           $forbidden = @("VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "MSVCP140.dll", "ucrtbase.dll")
           $found = $forbidden | Where-Object { $imports -match [regex]::Escape($_) }
           if ($found) {
@@ -82,9 +82,9 @@ jobs:
       - name: 创建 GitHub Release 并上传安装程序
         uses: softprops/action-gh-release@v2
         with:
-          name: FerroxPlorer v${{ steps.ver.outputs.version }}
+          name: FileFiles One v${{ steps.ver.outputs.version }}
           files: |
-            installer/Output/FerroxPlorer-Setup-*.exe
+            installer/Output/FileFiles-One-Setup-*.exe
             installer/Restore-DefaultFileManager.ps1
           body_path: release_notes.md
           # tag 无附注正文时自动生成提交列表补全

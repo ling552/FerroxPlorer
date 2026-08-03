@@ -12,9 +12,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// GitHub 仓库标识（owner/name），检查更新与「关于」页链接共用
-pub const REPO: &str = "ling552/FerroxPlorer";
+pub const REPO: &str = "ling552/FileFiles-One";
 /// 仓库主页地址（「关于」页展示 + 浏览器打开）
-pub const REPO_URL: &str = "https://github.com/ling552/FerroxPlorer";
+pub const REPO_URL: &str = "https://github.com/ling552/FileFiles-One";
 /// 当前应用版本（编译时取自 Cargo.toml）
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -27,7 +27,7 @@ pub struct ReleaseInfo {
     pub notes: String,
     /// 安装程序资产的直链下载地址
     pub asset_url: String,
-    /// 安装程序文件名，如 "FerroxPlorer-Setup-0.2.0.exe"
+    /// 安装程序文件名，如 "FileFiles-One-Setup-0.2.0.exe"
     pub asset_name: String,
     /// 安装程序大小（字节；API 提供，用于进度分母）
     pub asset_size: u64,
@@ -62,7 +62,7 @@ pub fn check_latest() -> Result<ReleaseInfo, String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let resp = ureq::get(&url)
         // GitHub API 要求 User-Agent，否则 403
-        .set("User-Agent", "FerroxPlorer-Updater")
+        .set("User-Agent", "FileFiles-One-Updater")
         .set("Accept", "application/vnd.github+json")
         .timeout(Duration::from_secs(15))
         .call();
@@ -122,7 +122,7 @@ fn check_latest_via_web() -> Result<ReleaseInfo, String> {
     let url = format!("https://github.com/{REPO}/releases/latest");
     let resp = agent
         .get(&url)
-        .set("User-Agent", "FerroxPlorer-Updater")
+        .set("User-Agent", "FileFiles-One-Updater")
         .timeout(Duration::from_secs(15))
         .call();
     // redirects(0) 下 3xx 可能作为 Ok 或 Status 错误返回，两种都取响应
@@ -144,7 +144,7 @@ fn check_latest_via_web() -> Result<ReleaseInfo, String> {
         return Err("无法从跳转地址解析版本号".to_string());
     }
     let version = tag.trim_start_matches(['v', 'V']).to_string();
-    let asset_name = format!("FerroxPlorer-Setup-{version}.exe");
+    let asset_name = format!("FileFiles-One-Setup-{version}.exe");
     Ok(ReleaseInfo {
         version,
         notes: String::new(),
@@ -165,7 +165,7 @@ pub fn download(
     progress: impl Fn(u64, u64, f64),
 ) -> Result<PathBuf, String> {
     let resp = ureq::get(&info.asset_url)
-        .set("User-Agent", "FerroxPlorer-Updater")
+        .set("User-Agent", "FileFiles-One-Updater")
         .timeout(Duration::from_secs(3600))
         .call()
         .map_err(|e| format!("下载请求失败：{e}"))?;
