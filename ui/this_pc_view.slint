@@ -51,11 +51,11 @@ export component ThisPcView inherits Rectangle {
                         property <FileEntry> entry: AppState.entries[tile.idx];
                         border-radius: Theme.radius-card;
                         border-width: 1px;
-                        border-color: card.entry.selected ? #0078d473 : #0000000f;
+                        border-color: card.entry.selected ? Theme.primary.with-alpha(0.45) : #0000000f;
                         // card-alpha：半透明模式下给微弱填充避免实心白板压毛玻璃，不透明时为 1.0
                         background: card.entry.selected
-                            ? #0078d426
-                            : (ov.hover-idx == tile.idx ? #0078d40a
+                            ? Theme.primary.with-alpha(0.15)
+                            : (ov.hover-idx == tile.idx ? Theme.primary.with-alpha(0.04)
                                 : Theme.surface.with-alpha(Theme.card-alpha));
                         clip: true;
 

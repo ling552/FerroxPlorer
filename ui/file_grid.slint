@@ -21,12 +21,15 @@ export component FileGrid inherits Rectangle {
     // 宽度随图标缩放；高度至少容纳上下边距、图标、名称和信息行。
     property <length> cell-w: 112px * AppState.icon-scale;
     property <length> icon-box: 58px * AppState.icon-scale;
+    property <length> icon-top: 12px;
+    property <length> name-gap: 0px;
     property <length> info-h: 16px;
-    // 名称区域：选中项向下扩展以容纳完整文本，未选中项固定高度并截断
-    property <length> name-h: 38px;
-    property <length> cell-h: max(root.cell-w, 12px + root.icon-box + root.name-h + root.info-h + 10px);
+    // 未选中项最多显示两行；选中项按完整文本高度展开。
+    property <length> name-h: 32px;
+    property <length> cell-h: max(root.cell-w, root.icon-top + root.icon-box + root.name-gap + root.name-h + root.info-h + 10px);
     property <length> pitch: root.cell-w + 10px;
-    // 每行高度（卡片 + 行间距 10px），用于 ListView 行高与命中换算
+    // 每行高度（卡片 + 行间距 10px），用于 ListView 行高与命中换算。
+    // 选中长名称通过列表上方的独立覆盖层展示，不改变行虚拟化高度。
     property <length> row-h: root.cell-h + 10px;
     // 自适应列数（依据可视宽度）
     property <int> cols: max(1, floor((list.visible-width - 24px) / root.pitch));
@@ -58,77 +61,88 @@ export component FileGrid inherits Rectangle {
 
                     if cell.valid: card := Rectangle {
                         property <FileEntry> entry: AppState.entries[cell.idx];
-                        // 选中项名称可能需要的额外高度（超出默认 name-h 的部分）
+                        // 长名称展示改由顶层覆盖层处理，避免遮住下一行。
                         property <length> extra-name-h: 0px;
                         border-radius: Theme.radius-card;
                         border-width: 1px;
-                        border-color: card.entry.selected ? #0078d473 : transparent;
+                        border-color: card.entry.selected ? Theme.primary.with-alpha(0.45) : transparent;
                         background: card.entry.selected
-                            ? #0078d426
-                            : (ov.hover-idx == cell.idx ? #0078d412 : transparent);
-                        // 选中项向下扩展至名称完整高度（类似资源管理器），未选中项维持固定高度
-                        height: card.entry.selected
-                            ? (root.cell-h + card.extra-name-h)
-                            : root.cell-h;
+                            ? Theme.primary.with-alpha(0.15)
+                            : (ov.hover-idx == cell.idx ? Theme.primary.with-alpha(0.07) : transparent);
+                        // 选中状态由顶层完整卡片绘制，确保长名称始终在下一行项目之上。
+                        visible: !card.entry.selected || AppState.editing-index == cell.idx;
+                        // 卡片固定贴住单元格上边缘。
+                        x: 0px;
+                        y: 0px;
+                        width: 100%;
+                        height: root.cell-h + card.extra-name-h;
                         clip: true;
 
-                        VerticalLayout {
-                            padding-top: 12px;
-                            padding-bottom: 10px;
-                            padding-left: 8px;
-                            padding-right: 8px;
-                            spacing: 0px;
-                            alignment: start;
-                            HorizontalLayout {
-                                alignment: center;
-                                FileIcon {
-                                    icon-class: card.entry.icon-class;
-                                    label: card.entry.icon-label;
-                                    thumb: card.entry.thumb;
-                                    has-thumb: card.entry.has-thumb;
-                                    box: root.icon-box;
-                                }
-                            }
-                            if AppState.editing-index != cell.idx: name-text := Text {
+                        // 直接定位图标、名称和信息行，避免布局在名称高度变化时重新居中。
+                        FileIcon {
+                            x: (parent.width - root.icon-box) / 2;
+                            y: root.icon-top;
+                            icon-class: card.entry.icon-class;
+                            label: card.entry.icon-label;
+                            thumb: card.entry.thumb;
+                            has-thumb: card.entry.has-thumb;
+                            box: root.icon-box;
+                        }
+                        if AppState.editing-index != cell.idx: name-area := Rectangle {
+                            x: 8px;
+                            y: root.icon-top + root.icon-box + root.name-gap;
+                            width: parent.width - 16px;
+                            // 基础卡片始终只显示两行名称；选中后的完整名称由顶层覆盖层绘制。
+                            height: root.name-h;
+                            clip: true;
+                            cell-name-text := Text {
+                                x: 0px;
+                                y: 0px;
+                                width: parent.width;
+                                height: self.preferred-height;
                                 text: card.entry.name;
                                 font-size: Theme.fs-small;
                                 color: Theme.text;
                                 horizontal-alignment: center;
                                 vertical-alignment: top;
+                                // 文件名换行：用 word-wrap 而非 char-wrap。
+                                // char-wrap 在 femtovg 渲染器下对 CJK 字符处理异常
+                                // （CJK 字符消失、仅残留 ASCII 尾部，如「hey小可爱.txt」显示成「xt」）。
+                                // word-wrap 走 unicode-linebreak（UAX 14），CJK 字符间天然为断行点，
+                                // 行为等价于逐字换行且对所有渲染器稳定。
                                 wrap: word-wrap;
-                                overflow: elide;
-                                // 选中项显示完整高度，未选中项截断至固定高度
-                                height: card.entry.selected ? self.preferred-height : root.name-h;
-                                init => {
-                                    if card.entry.selected && name-text.preferred-height > root.name-h {
-                                        card.extra-name-h = name-text.preferred-height - root.name-h;
-                                    }
-                                }
+                                overflow: clip;
                             }
-                            if AppState.editing-index == cell.idx: RenameEdit {
-                                text: card.entry.name;
-                                font-size: Theme.fs-small;
-                                // 文本变化时保存到全局
-                                text-changed(t) => { AppState.rename-text = t; }
-                                // 按 Escape 退出重命名
-                                cancel => { AppState.editing-index = -1; }
-                                commit(t) => {
-                                    AppState.rename-entry(cell.idx, t);
-                                    AppState.editing-index = -1;
-                                }
+                        }
+                        if AppState.editing-index == cell.idx: rename := RenameEdit {
+                            x: 8px;
+                            y: root.icon-top + root.icon-box + root.name-gap;
+                            width: parent.width - 16px;
+                            text: card.entry.name;
+                            font-size: Theme.fs-small;
+                            // 文本变化时保存到全局
+                            text-changed(t) => { AppState.rename-text = t; }
+                            // 按 Escape 退出重命名
+                            cancel => { AppState.editing-index = -1; }
+                            commit(t) => {
+                                AppState.rename-entry(cell.idx, t);
+                                AppState.editing-index = -1;
                             }
-                            Text {
-                                // 驱动器显示总容量、便携设备显示类型；其余目录显示修改日期、文件显示大小
-                                text: card.entry.icon-class == "drive" ? card.entry.size
-                                    : card.entry.icon-class == "device" ? card.entry.kind
-                                    : card.entry.is-dir ? card.entry.modified : card.entry.size;
-                                font-size: Theme.fs-tiny;
-                                color: Theme.subtle;
-                                height: root.info-h;
-                                vertical-alignment: center;
-                                horizontal-alignment: center;
-                                overflow: elide;
-                            }
+                        }
+                        Text {
+                            x: 8px;
+                            y: root.icon-top + root.icon-box + root.name-gap + root.name-h + card.extra-name-h;
+                            width: parent.width - 16px;
+                            // 驱动器显示总容量、便携设备显示类型；其余目录显示修改日期、文件显示大小
+                            text: card.entry.icon-class == "drive" ? card.entry.size
+                                : card.entry.icon-class == "device" ? card.entry.kind
+                                : card.entry.is-dir ? card.entry.modified : card.entry.size;
+                            font-size: Theme.fs-tiny;
+                            color: Theme.subtle;
+                            height: root.info-h;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                            overflow: elide;
                         }
 
                         // 标签彩色点：叠在图标左下角（重要红 / 待归档橙 / 已完成绿，可并列多个）
@@ -136,7 +150,7 @@ export component FileGrid inherits Rectangle {
                             width: 32px;
                             height: 10px;
                             x: parent.width / 2 - root.icon-box / 2;
-                            y: 12px + root.icon-box - 9px;
+                            y: root.icon-top + root.icon-box - 9px;
                             HorizontalLayout {
                                 alignment: start;
                                 spacing: 3px;
@@ -160,7 +174,7 @@ export component FileGrid inherits Rectangle {
                             width: 18px;
                             height: 18px;
                             x: parent.width / 2 + root.icon-box / 2 - 15px;
-                            y: 12px + root.icon-box - 15px;
+                            y: root.icon-top + root.icon-box - 15px;
                             border-radius: 5px;
                             border-width: 2px;
                             border-color: white;
@@ -182,6 +196,111 @@ export component FileGrid inherits Rectangle {
             }
         }
     }
+
+    // 选中项目作为完整不透明卡片绘制在列表上层：长名称覆盖下一行，
+    // 不会再被下一行图标盖住，也不会透出零碎的底层内容。
+    for entry[i] in AppState.entries: selected-card := Rectangle {
+        property <bool> visible-card: entry.selected && AppState.editing-index != i;
+        property <int> grid-row: floor(i / root.cols);
+        property <int> grid-col: mod(i, root.cols);
+        property <length> content-y: (self.grid-row == 0 ? 12px : self.grid-row * root.row-h) + list.viewport-y;
+        visible: self.visible-card;
+        x: 12px + self.grid-col * root.pitch;
+        y: self.content-y;
+        width: root.cell-w;
+        border-radius: Theme.radius-card;
+        border-width: 1px;
+        border-color: Theme.primary.with-alpha(0.45);
+        // 选中卡片须为实色，才能彻底遮住下方行的图标与文字。
+        background: Theme.primary.with-alpha(Theme.dark ? 0.32 : 0.16);
+        clip: true;
+
+        FileIcon {
+            x: (parent.width - root.icon-box) / 2;
+            y: root.icon-top;
+            icon-class: entry.icon-class;
+            label: entry.icon-label;
+            thumb: entry.thumb;
+            has-thumb: entry.has-thumb;
+            box: root.icon-box;
+        }
+        selected-name-text := Text {
+            x: 8px;
+            y: root.icon-top + root.icon-box + root.name-gap;
+            width: parent.width - 16px;
+            height: self.preferred-height;
+            text: entry.name;
+            font-size: Theme.fs-small;
+            color: Theme.text;
+            horizontal-alignment: center;
+            vertical-alignment: top;
+            wrap: word-wrap;
+            overflow: clip;
+        }
+        // 信息行固定在默认名称区下方；仅超出两行的实际名称才会把它向下推。
+        property <length> extra-name-h: max(0px, selected-name-text.preferred-height - root.name-h);
+        Text {
+            x: 8px;
+            y: root.icon-top + root.icon-box + root.name-gap + root.name-h + selected-card.extra-name-h;
+            width: parent.width - 16px;
+            text: entry.icon-class == "drive" ? entry.size
+                : entry.icon-class == "device" ? entry.kind
+                : entry.is-dir ? entry.modified : entry.size;
+            font-size: Theme.fs-tiny;
+            color: Theme.subtle;
+            height: root.info-h;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        height: root.cell-h + self.extra-name-h;
+
+        // 标签彩色点保持与普通卡片一致。
+        Rectangle {
+            width: 32px;
+            height: 10px;
+            x: parent.width / 2 - root.icon-box / 2;
+            y: root.icon-top + root.icon-box - 9px;
+            HorizontalLayout {
+                alignment: start;
+                spacing: 3px;
+                if entry.tag-important: Rectangle {
+                    width: 9px; height: 9px; border-radius: 4.5px;
+                    background: #d13438; border-width: 2px; border-color: Theme.primary.with-alpha(Theme.dark ? 0.32 : 0.16);
+                }
+                if entry.tag-archive: Rectangle {
+                    width: 9px; height: 9px; border-radius: 4.5px;
+                    background: #ff8c00; border-width: 2px; border-color: Theme.primary.with-alpha(Theme.dark ? 0.32 : 0.16);
+                }
+                if entry.tag-done: Rectangle {
+                    width: 9px; height: 9px; border-radius: 4.5px;
+                    background: #107c10; border-width: 2px; border-color: Theme.primary.with-alpha(Theme.dark ? 0.32 : 0.16);
+                }
+            }
+        }
+        if entry.git-status != "": Rectangle {
+            width: 18px;
+            height: 18px;
+            x: parent.width / 2 + root.icon-box / 2 - 15px;
+            y: root.icon-top + root.icon-box - 15px;
+            border-radius: 5px;
+            border-width: 2px;
+            border-color: Theme.primary.with-alpha(Theme.dark ? 0.32 : 0.16);
+            background: entry.git-status == "?" ? #8a99aa
+                : entry.git-status == "!" ? #d13438
+                : entry.git-status == "A" ? #107c10
+                : #ff8c00;
+            Text {
+                text: entry.git-status;
+                color: white;
+                font-size: 11px;
+                font-weight: 800;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
     // 统一输入层：网格模式（二维命中），覆盖在 ListView 之上集中处理指针交互
     ov := InputOverlay {
         width: 100%;

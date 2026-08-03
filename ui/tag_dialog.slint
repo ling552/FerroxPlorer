@@ -60,6 +60,7 @@ export component TagDialog inherits Rectangle {
                     name-edit := LineEdit {
                         text <=> AppState.tag-dialog-name;
                         placeholder-text: "如: 工作";
+                        changed has-focus => { AppState.input-active = self.has-focus; }
                         key-pressed(ev) => {
                             if (ev.text == Key.Return) {
                                 root.confirm();
@@ -101,6 +102,7 @@ export component TagDialog inherits Rectangle {
                             clicked => {
                                 AppState.tag-dialog-name = "";
                                 AppState.tag-dialog-open = false;
+                                AppState.input-active = false;
                             }
                         }
                     }

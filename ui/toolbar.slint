@@ -127,6 +127,7 @@ export component Toolbar inherits Rectangle {
                     init => {
                         self.focus();
                         self.select-all();
+                        AppState.input-active = true;
                     }
                     edited => {
                         AppState.request-path-completion(self.text);
@@ -139,6 +140,7 @@ export component Toolbar inherits Rectangle {
                             AppState.commit-path(self.text);
                         }
                         AppState.set-omni-mode("path");
+                        AppState.input-active = false;
                     }
                     key-pressed(ev) => {
                         // > 命令模式：上下箭头选择命令
@@ -154,12 +156,14 @@ export component Toolbar inherits Rectangle {
                         }
                         if (ev.text == Key.Escape) {
                             AppState.set-omni-mode("path");
+                            AppState.input-active = false;
                             return accept;
                         }
                         return reject;
                     }
                     changed has-focus => {
                         if (!self.has-focus) {
+                            AppState.input-active = false;
                             AppState.set-omni-mode("path");
                         }
                     }
@@ -178,6 +182,10 @@ export component Toolbar inherits Rectangle {
                     single-line: true;
                     vertical-alignment: center;
                     horizontal-stretch: 1;
+                    changed has-focus => {
+                        AppState.input-active = self.has-focus;
+                        if (!self.has-focus) { AppState.set-omni-mode("path"); }
+                    }
                     edited => { AppState.do-search(self.text); }
                     // 搜索框聚焦时会吞掉空格/Esc，全局快捷键到不了 FocusScope。
                     // 在此显式处理：预览打开时空格/Esc 关闭、其余按键吞掉避免改写搜索词；
@@ -194,6 +202,7 @@ export component Toolbar inherits Rectangle {
                         if (ev.text == Key.Escape) {
                             AppState.do-search("");
                             AppState.set-omni-mode("path");
+                            AppState.input-active = false;
                             return accept;
                         }
                         return reject;

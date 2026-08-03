@@ -46,17 +46,26 @@ export component QuickLook inherits Rectangle {
         VerticalLayout {
             // 头部：图标 + 名称 + 副标题 + 关闭按钮
             Rectangle {
-                height: 64px;
+                // 预览顶部图标需要完整的 44px 绘制区，避免系统图标底部被标题栏裁掉。
+                height: 68px;
                 HorizontalLayout {
-                    padding: 14px;
+                    padding: 12px;
                     padding-left: 18px;
+                    padding-right: 14px;
                     spacing: 12px;
-                    FileIcon {
-                        icon-class: AppState.ql-icon-class;
-                        thumb: AppState.ql-thumb;
-                        has-thumb: AppState.ql-has-thumb;
-                        box: 36px;
-                        radius: 9px;
+                    // 40px 图标放进 44px 容器，给系统图标透明边缘留出完整绘制空间。
+                    Rectangle {
+                        width: 44px;
+                        height: 44px;
+                        FileIcon {
+                            icon-class: AppState.ql-icon-class;
+                            thumb: AppState.ql-thumb;
+                            has-thumb: AppState.ql-has-thumb;
+                            box: 40px;
+                            radius: 9px;
+                            x: 2px;
+                            y: 2px;
+                        }
                     }
                     VerticalLayout {
                         alignment: center;
@@ -358,16 +367,17 @@ export component QuickLook inherits Rectangle {
                 }
             }
 
-            // 视频控制条直接覆盖在画面底部，不再额外占用一行提示区域。
-            // 其它预览仍保留快捷键提示。
-            if AppState.ql-kind != 4: Rectangle {
+            // 所有预览统一保留底部提示栏，视频原生画面也止于提示栏上方。
+            Rectangle {
                 height: 38px;
                 background: Theme.surface;
                 Rectangle { y: 0; height: 1px; background: Theme.border; }
                 Text {
                     text: AppState.ql-kind == 1
                         ? "滚轮缩放 · 拖动查看 · 按 空格 或 Esc 关闭"
-                        : "按 空格 或 Esc 关闭预览";
+                        : AppState.ql-kind == 4
+                            ? "按 空格 或 Esc 关闭视频预览"
+                            : "按 空格 或 Esc 关闭预览";
                     font-size: Theme.fs-tiny;
                     color: Theme.muted;
                     horizontal-alignment: center;
@@ -377,6 +387,5 @@ export component QuickLook inherits Rectangle {
         }
     }
 
-    // 视频控制栏始终由原生半透明覆盖窗绘制在 MFPlay 画面底边；不要在全屏时
-    // 再创建 Slint 控制栏，否则会在主窗口底边出现第二套控件。
+    // 播放控制条由原生半透明覆盖窗绘制在视频内容区底边；卡片最底部使用统一提示栏。
 }

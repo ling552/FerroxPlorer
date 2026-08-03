@@ -10,6 +10,7 @@
 //! 新增 text-changed 回调，用于在点击编辑框外部区域时提交当前文本。
 
 import { LineEdit } from "std-widgets.slint";
+import { AppState } from "globals.slint";
 
 export component RenameEdit inherits Rectangle {
     in property <string> text;
@@ -31,6 +32,7 @@ export component RenameEdit inherits Rectangle {
         width: 100%;
         text: root.text;
         font-size: root.font-size;
+        changed has-focus => { AppState.input-active = self.has-focus; }
         // 文本变化时通知父组件，以便点击外部区域时能提交当前编辑内容
         edited(t) => { root.text-changed(t); }
         key-pressed(ev) => {

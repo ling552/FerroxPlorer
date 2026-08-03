@@ -39,13 +39,27 @@ export component NetworkLocationDialog inherits Rectangle {
                 VerticalLayout {
                     spacing: 6px;
                     Text { text: "显示名称"; font-size: 12px; color: Theme.muted; }
-                    LineEdit { text <=> AppState.netloc-name; placeholder-text: "如: 共享文档 (可空)"; }
+                    LineEdit {
+                        text <=> AppState.netloc-name;
+                        placeholder-text: "如: 共享文档 (可空)";
+                        changed has-focus => { AppState.input-active = self.has-focus; }
+                    }
                     Text { text: "服务器地址"; font-size: 12px; color: Theme.muted; }
-                    LineEdit { text <=> AppState.netloc-server; placeholder-text: "\\\\server\\share"; }
+                    LineEdit {
+                        text <=> AppState.netloc-server;
+                        placeholder-text: "\\\\server\\share";
+                        changed has-focus => { AppState.input-active = self.has-focus; }
+                    }
                     Text { text: "用户名 (可空)"; font-size: 12px; color: Theme.muted; }
-                    LineEdit { text <=> AppState.netloc-user; }
+                    LineEdit {
+                        text <=> AppState.netloc-user;
+                        changed has-focus => { AppState.input-active = self.has-focus; }
+                    }
                     Text { text: "密码 (可空)"; font-size: 12px; color: Theme.muted; }
-                    LineEdit { text <=> AppState.netloc-pass; }
+                    LineEdit {
+                        text <=> AppState.netloc-pass;
+                        changed has-focus => { AppState.input-active = self.has-focus; }
+                    }
                 }
 
                 Rectangle { vertical-stretch: 1; }
@@ -59,7 +73,7 @@ export component NetworkLocationDialog inherits Rectangle {
                         background: cancel-touch.has-hover ? Theme.primary-hover : Theme.surface;
                         border-width: 1px; border-color: Theme.border;
                         Text { text: "取消"; color: Theme.text; horizontal-alignment: center; vertical-alignment: center; }
-                        cancel-touch := TouchArea { clicked => { AppState.netloc-dialog-open = false; } }
+                        cancel-touch := TouchArea { clicked => { AppState.netloc-dialog-open = false; AppState.input-active = false; } }
                     }
                     Rectangle {
                         width: 80px; height: 34px; border-radius: 6px;

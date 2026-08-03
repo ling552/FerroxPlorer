@@ -83,7 +83,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: FerroxPlorer v${{ steps.ver.outputs.version }}
-          files: installer/Output/FerroxPlorer-Setup-*.exe
+          files: |
+            installer/Output/FerroxPlorer-Setup-*.exe
+            installer/Restore-DefaultFileManager.ps1
           body_path: release_notes.md
           # tag 无附注正文时自动生成提交列表补全
           generate_release_notes: true

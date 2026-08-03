@@ -4634,8 +4634,8 @@ fn bind_hash(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
 
 /// 预览卡片内容区在窗口内的物理像素矩形。
 /// 与 quick_look.slint 布局约定一致：卡片（AppState.ql-card-w/h 逻辑像素）居中、
-/// 头部高度取 ui_bridge::QL_HEADER_H；非视频预览另有 QL_FOOTER_H，视频则一直延伸
-/// 到卡片底边。卡片尺寸唯一来源是 ui_bridge::apply_ql_card_size，原生子窗口据此对齐。
+/// 头部和底部提示栏高度取 ui_bridge 常量；原生视频/网页子窗口仅覆盖中间内容区。
+/// 卡片尺寸唯一来源是 ui_bridge::apply_ql_card_size，原生子窗口据此对齐。
 #[cfg(windows)]
 fn quicklook_content_rect_phys(ui: &MainWindow) -> Option<(i32, i32, i32, i32)> {
     let mut out = None;
@@ -4650,14 +4650,8 @@ fn quicklook_content_rect_phys(ui: &MainWindow) -> Option<(i32, i32, i32, i32)> 
         let card_x = (win_w - card_w) / 2.0;
         let card_y = (win_h - card_h) / 2.0;
         let content_y = card_y + ui_bridge::QL_HEADER_H * scale;
-        // 视频不再渲染独立的底部提示栏，画面一直延伸到卡片底部；
-        // 其它预览仍为底部提示保留固定高度。
-        let footer_h = if st.get_ql_kind() == 4 {
-            0.0
-        } else {
-            ui_bridge::QL_FOOTER_H
-        };
-        let content_h = card_h - (ui_bridge::QL_HEADER_H + footer_h) * scale;
+        // 视频与其它预览统一为底部提示栏保留固定高度，原生画面不延伸到卡片底边。
+        let content_h = card_h - (ui_bridge::QL_HEADER_H + ui_bridge::QL_FOOTER_H) * scale;
         let mut x = card_x;
         let mut y = content_y;
         let mut width = card_w;
@@ -4665,8 +4659,7 @@ fn quicklook_content_rect_phys(ui: &MainWindow) -> Option<(i32, i32, i32, i32)> 
         if st.get_ql_kind() == 4 {
             let vw = st.get_ql_img_w().max(0) as f32;
             let vh = st.get_ql_img_h().max(0) as f32;
-            // 控制条是叠加在视频底部的半透明覆盖层，视频子窗口始终铺满
-            // 整个视频内容区；不能为控制条单独扣除高度，否则底部会出现空白。
+            // 原生控制条叠加在视频内容区底部；卡片底部提示栏已在上方矩形计算中扣除。
             if vw > 0.0 && vh > 0.0 {
                 let fit = (card_w / vw).min(content_h / vh);
                 width = vw * fit;
@@ -5047,10 +5040,9 @@ fn show_open_with_dialog(_ui: &MainWindow, _path: &str) {}
 
 // ─── 标签页 ───
 
-/// 标签栏是否已满：按当前窗口逻辑宽度与标签数，复用 Slint `tabs-full` 同公式判断
-/// 「再放一个最小宽度(72px)标签页」是否会挤出窗口按钮。供 Rust 各新建入口（右键
-/// 「在新标签页打开」/侧栏新标签页/on_new_tab）在新增前守卫，与 Slint 端「+」按钮
-/// 隐藏 / Ctrl+T 拦截保持一致；新增时取实时窗口宽度，故无需监听 resize。
+/// 标签栏是否已满：按当前窗口逻辑宽度与标签数，复用 Slint `tabs-full` 同公式判断。
+/// 标签默认 216px、空间不足时可收缩至 112px；再放一个低于此宽度的标签会挤出窗口按钮。
+/// Rust 各新建入口在新增前守卫，与 Slint 端「+」按钮隐藏 / Ctrl+T 拦截保持一致。
 fn tabs_full(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) -> bool {
     let n = core.borrow().tabs.len();
     if n == 0 {
@@ -5065,8 +5057,8 @@ fn tabs_full(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) -> bool {
     };
     // 可用宽度 = 窗口宽 − 左留白8 − 品牌图标26 − 窗口按钮3×46=138
     let avail = win_w - 172.0;
-    // 所需 = (N+1) 个最小宽度标签(72) + (N+1) 个间距(4) + 左内边距8 + 新建按钮26
-    let need = (n + 1) as f32 * 76.0 + 34.0;
+    // 所需 = (N+1) 个最小宽度标签(112) + (N+1) 个间距(4) + 左内边距8 + 新建按钮26
+    let need = (n + 1) as f32 * 116.0 + 34.0;
     need > avail
 }
 

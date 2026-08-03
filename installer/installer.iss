@@ -1,7 +1,7 @@
 ; FerroxPlorer Windows 安装程序脚本(Inno Setup 6)
 ; CI 中通过 /DAppVersion=x.y.z 传入版本号;本地手动编译时使用下方默认值
 #ifndef AppVersion
-  #define AppVersion "0.4.9"
+  #define AppVersion "0.4.11"
 #endif
 
 [Setup]
@@ -38,9 +38,12 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "..\target\release\ferroxplorer.exe"; DestDir: "{app}"; Flags: ignoreversion
+; 离线恢复入口：应用无法启动时也可安全恢复仍由本应用持有的文件管理器关联。
+Source: "Restore-DefaultFileManager.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\FerroxPlorer"; Filename: "{app}\ferroxplorer.exe"
+Name: "{group}\恢复默认文件管理器"; Filename: "powershell.exe"; Parameters: "-NoProfile -File ""{app}\Restore-DefaultFileManager.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\ferroxplorer.exe"
 Name: "{group}\{cm:UninstallProgram,FerroxPlorer}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\FerroxPlorer"; Filename: "{app}\ferroxplorer.exe"; Tasks: desktopicon
 

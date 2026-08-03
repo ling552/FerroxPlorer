@@ -75,7 +75,13 @@ export component PaneHeader inherits Rectangle {
                 horizontal-stretch: 1;
                 text: root.vpath;
                 placeholder-text: "输入路径后回车跳转";
-                accepted(t) => { root.navigate(t); }
+                changed has-focus => {
+                    AppState.input-active = self.has-focus;
+                }
+                accepted(t) => {
+                    root.navigate(t);
+                    AppState.input-active = false;
+                }
             }
         }
         Text {

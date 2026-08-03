@@ -1463,8 +1463,8 @@ fn fill_signature(state: &AppState, path: &Path, is_dir: bool) {
 const QL_IMAGE_SIZE: u32 = 1600;
 
 /// 预览卡片头部/底部高度（逻辑像素）——与 quick_look.slint 布局约定一致，
-/// 视频/网页原生子窗口矩形换算（main.rs quicklook_content_rect_phys）共用
-pub const QL_HEADER_H: f32 = 64.0;
+/// 视频/网页原生子窗口矩形换算（main.rs quicklook_content_rect_phys）共用。
+pub const QL_HEADER_H: f32 = 68.0;
 pub const QL_FOOTER_H: f32 = 38.0;
 /// 按内容类型计算并应用预览卡片尺寸（逻辑像素）。
 /// `kind_code` 与 PreviewKind::code 一致；`iw`/`ih` 为图片或视频原生分辨率
@@ -1477,9 +1477,8 @@ pub fn apply_ql_card_size(ui: &MainWindow, kind_code: i32, iw: i32, ih: i32, web
     let size = ui.window().size();
     let win_w = size.width as f32 / scale;
     let win_h = size.height as f32 / scale;
-    // 视频控制条直接覆盖在画面底部，不再显示单独的底部提示栏；其它预览保留提示栏。
-    let footer_h = if kind_code == 4 { 0.0 } else { QL_FOOTER_H };
-    let chrome = QL_HEADER_H + footer_h;
+    // 所有预览统一保留底部提示栏，视频原生画面仅占据提示栏上方内容区。
+    let chrome = QL_HEADER_H + QL_FOOTER_H;
     // 内容区可用上限（窗口小则收缩，但不低于最小 256）
     let max_cw = (win_w - 96.0).clamp(256.0, 1200.0);
     let max_ch = (win_h - 96.0 - chrome).clamp(256.0, 900.0);
@@ -1502,7 +1501,7 @@ pub fn apply_ql_card_size(ui: &MainWindow, kind_code: i32, iw: i32, ih: i32, web
                 (704.0_f32.min(max_cw), 396.0_f32.min(max_ch))
             }
         }
-        // 视频：控制条覆盖在视频底部，视频画面本身铺满内容区，不产生额外空白。
+        // 视频：画面适应内容区，底部提示栏由 Quick Look 统一保留。
         4 => {
             let video_max_ch = max_ch;
             if iw > 0 && ih > 0 {

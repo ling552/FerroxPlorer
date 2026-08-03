@@ -20,7 +20,10 @@ export component CommandPalette inherits Rectangle {
         background: rgba(18, 34, 52, 0.3);
 
         TouchArea {
-            clicked => { root.open = false; }
+            clicked => {
+                root.open = false;
+                AppState.input-active = false;
+            }
         }
 
         // 命令面板主体
@@ -65,13 +68,18 @@ export component CommandPalette inherits Rectangle {
                             horizontal-stretch: 1;
                             // 面板由 if open 条件实例化：每次打开都重建本元素，
                             // init 聚焦让 Ctrl+P 后直接可输入，无需再点一次输入框
-                            init => { self.focus(); }
+                            init => {
+                                self.focus();
+                                AppState.input-active = true;
+                            }
+                            changed has-focus => { AppState.input-active = self.has-focus; }
                             edited(t) => { root.query-changed(t); }
                             // 回车执行当前选中项（默认首个匹配；鼠标悬停/键盘上下可改选中项）
                             accepted => {
                                 if (root.commands.length > 0) {
                                     root.execute-command(root.commands[min(root.selected-index, root.commands.length - 1)].action);
                                     root.open = false;
+                                    AppState.input-active = false;
                                 }
                             }
                             // 键盘上下箭头导航选中项 + Esc 关闭。
@@ -96,6 +104,7 @@ export component CommandPalette inherits Rectangle {
                                 }
                                 if (ev.text == Key.Escape) {
                                     root.open = false;
+                                    AppState.input-active = false;
                                     return accept;
                                 }
                                 return reject;

@@ -272,6 +272,7 @@ export component PropertiesDialog inherits Rectangle {
                             LineEdit {
                                 horizontal-stretch: 1;
                                 placeholder-text: "粘贴期望的哈希值, 自动识别算法";
+                                changed has-focus => { AppState.input-active = self.has-focus; }
                                 text <=> root.verify-input;
                                 accepted => { AppState.verify-hash(root.verify-input); }
                             }

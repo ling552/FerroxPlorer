@@ -146,6 +146,9 @@ export global AppState {
     // 双面板比例拖拽结束时持久化
     callback save-dual-ratio(float);
     in-out property <string> omni-mode: "path";
+    // 输入控件焦点协调：失焦后由主窗口把焦点还给全局快捷键作用域。
+    in-out property <bool> input-active: false;
+    in-out property <int> input-blur-token: 0;
     in-out property <string> search-text;
     in-out property <bool> can-back: false;
     in-out property <bool> can-forward: false;
