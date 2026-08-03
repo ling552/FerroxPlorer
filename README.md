@@ -39,6 +39,7 @@ cargo build --release
 若卸载或应用无法启动后仍需恢复原来的文件夹关联，请从对应版本 Release 下载 `Restore-DefaultFileManager.ps1`，在 PowerShell 中执行：
 
 ```powershell
+cd C:\Users\<your-name>\Downloads    #此处改为脚本下载地址
 powershell -ExecutionPolicy Bypass -File .\Restore-DefaultFileManager.ps1
 ```
 
