@@ -114,7 +114,7 @@ pub fn registration_state() -> RegistrationState {
             if owner && command_matches(&actual, &expected) && delegate.as_deref() == Some("") {
                 continue;
             }
-            if owner && command_targets_ferroxplorer(&actual) {
+            if owner && command_targets_ferroxplorer(&actual, target.with_target) {
                 needs_repair = true;
                 continue;
             }
@@ -147,11 +147,25 @@ fn command_matches(actual: &str, expected: &str) -> bool {
 }
 
 #[cfg(windows)]
-fn command_targets_ferroxplorer(command: &str) -> bool {
-    command
-        .trim()
-        .to_ascii_lowercase()
-        .contains("ferroxplorer.exe")
+fn command_targets_ferroxplorer(command: &str, with_target: bool) -> bool {
+    let Some(rest) = command.strip_prefix('"') else {
+        return false;
+    };
+    let Some((exe, arguments)) = rest.split_once('"') else {
+        return false;
+    };
+    if !exe
+        .rsplit(['\\', '/'])
+        .next()
+        .is_some_and(|name| name.eq_ignore_ascii_case("ferroxplorer.exe"))
+    {
+        return false;
+    }
+    if with_target {
+        arguments.trim().eq_ignore_ascii_case("\"%1\"")
+    } else {
+        arguments.trim().is_empty()
+    }
 }
 
 #[cfg(windows)]
@@ -160,7 +174,7 @@ fn legacy_registration(hkcu: &RegKey) -> bool {
         hkcu.open_subkey(format!(r"{}\command", target.verb_key))
             .ok()
             .and_then(|command| command.get_value::<String, _>("").ok())
-            .is_some_and(|command| command_targets_ferroxplorer(&command))
+            .is_some_and(|command| command_targets_ferroxplorer(&command, target.with_target))
     })
 }
 
@@ -290,7 +304,7 @@ fn disable_win() -> std::io::Result<()> {
         };
         let actual: String = command.get_value("").unwrap_or_default();
         let owner = command.get_value::<u32, _>(OWNER_VALUE).unwrap_or(0) == 1;
-        if !owner || !command_targets_ferroxplorer(&actual) {
+        if !owner || !command_targets_ferroxplorer(&actual, target.with_target) {
             continue;
         }
 
@@ -375,12 +389,38 @@ mod tests {
     }
 
     #[test]
-    fn ownership_check_rejects_other_file_managers() {
+    fn ownership_check_requires_exact_managed_command() {
         assert!(command_targets_ferroxplorer(
-            r#""D:\Old\FerroxPlorer.exe" "%1""#
+            r#""D:\Old\FerroxPlorer.exe" "%1""#,
+            true
+        ));
+        assert!(command_targets_ferroxplorer(
+            r#""D:\Old\FerroxPlorer.exe""#,
+            false
         ));
         assert!(!command_targets_ferroxplorer(
-            r#""C:\Tools\OtherExplorer.exe" "%1""#
+            r#""D:\Old\FerroxPlorer.exe" "%1" --residue""#,
+            true
+        ));
+        assert!(!command_targets_ferroxplorer(
+            r#""D:\Old\FerroxPlorer.exe" "%1""#,
+            false
+        ));
+        assert!(!command_targets_ferroxplorer(
+            r#""C:\Tools\OtherExplorer.exe" "%1""#,
+            true
+        ));
+        assert!(!command_targets_ferroxplorer(
+            r#""C:\Tools\FerroxPlorer.exe.bak" "%1""#,
+            true
+        ));
+        assert!(!command_targets_ferroxplorer(
+            r#""C:\Tools\OtherExplorer.exe" "ferroxplorer.exe""#,
+            true
+        ));
+        assert!(!command_targets_ferroxplorer(
+            r#"C:\Apps\FerroxPlorer.exe "%1""#,
+            true
         ));
     }
 }

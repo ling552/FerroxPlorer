@@ -8,10 +8,10 @@ $ErrorActionPreference = 'Stop'
 $backupPath = 'Software\FerroxPlorer\DefaultFileManager'
 $ownerValue = 'FerroxPlorerOwner'
 $targets = @(
-    [PSCustomObject]@{ Id = 'Directory'; VerbKey = 'Software\Classes\Directory\shell\open' },
-    [PSCustomObject]@{ Id = 'Drive'; VerbKey = 'Software\Classes\Drive\shell\open' },
-    [PSCustomObject]@{ Id = 'ThisPcOpen'; VerbKey = 'Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\open' },
-    [PSCustomObject]@{ Id = 'ThisPcOpenNewWindow'; VerbKey = 'Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\opennewwindow' }
+    [PSCustomObject]@{ Id = 'Directory'; VerbKey = 'Software\Classes\Directory\shell\open'; WithTarget = $true },
+    [PSCustomObject]@{ Id = 'Drive'; VerbKey = 'Software\Classes\Drive\shell\open'; WithTarget = $true },
+    [PSCustomObject]@{ Id = 'ThisPcOpen'; VerbKey = 'Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\open'; WithTarget = $false },
+    [PSCustomObject]@{ Id = 'ThisPcOpenNewWindow'; VerbKey = 'Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\opennewwindow'; WithTarget = $false }
 )
 
 function Get-Flag([Microsoft.Win32.RegistryKey]$key, [string]$name) {
@@ -31,6 +31,14 @@ function Restore-Value(
     } else {
         $destination.DeleteValue($targetName, $false)
     }
+}
+
+function Is-FerroxPlorerCommand([string]$command, [bool]$withTarget) {
+    $pattern = if ($withTarget) { '^"([^"]+)" "%1"$' } else { '^"([^"]+)"$' }
+    if ($command -notmatch $pattern) {
+        return $false
+    }
+    return [System.IO.Path]::GetFileName($Matches[1]).Equals('ferroxplorer.exe', [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Remove-EmptySubKey([Microsoft.Win32.RegistryKey]$parent, [string]$child) {
@@ -62,7 +70,7 @@ foreach ($target in $targets) {
     }
 
     $commandText = [string]$command.GetValue('', '')
-    if (-not (Get-Flag $command $ownerValue) -or $commandText -notmatch '(?i)ferroxplorer\.exe') {
+    if (-not (Get-Flag $command $ownerValue) -or -not (Is-FerroxPlorerCommand $commandText $target.WithTarget)) {
         Write-Host "$($target.Id): not owned by FerroxPlorer; kept unchanged." -ForegroundColor Yellow
         $command.Close()
         $skipped++

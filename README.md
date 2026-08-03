@@ -34,6 +34,16 @@ cargo build --release
 
 产物位于 `target/release/ferroxplorer.exe`。
 
+## 恢复默认文件管理器
+
+若卸载或应用无法启动后仍需恢复原来的文件夹关联，请从对应版本 Release 下载 `Restore-DefaultFileManager.ps1`，在 PowerShell 中执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Restore-DefaultFileManager.ps1
+```
+
+脚本仅在关联仍带有 `FerroxPlorerOwner` 标记、且命令精确为 FerroxPlorer 的受管格式时恢复备份；已改用其它文件管理器或命令被修改的项会跳过，不会覆盖。
+
 ## 许可证
 
 [MIT](LICENSE)
