@@ -33,8 +33,10 @@ export component DetailsPane inherits Rectangle {
     clip: true;
 
     ScrollView {
+        viewport-height: self.visible-height;
         VerticalLayout {
             padding: 16px;
+            padding-bottom: 24px;
             spacing: 14px;
             alignment: start;
 
@@ -166,8 +168,6 @@ export component DetailsPane inherits Rectangle {
                                 }
                             }
                             info-row { label: "修改时间"; value: AppState.sel-modified; }
-                            info-row { label: "创建时间"; value: AppState.sel-created; }
-                            info-row { label: "所有者"; value: AppState.sel-owner; }
                             info-row { label: "属性"; value: AppState.sel-attributes; }
                             // 打开方式仅文件（非目录）有意义，目录时为空则不占行
                             if !AppState.sel-is-dir && AppState.sel-open-with != "": info-row {
