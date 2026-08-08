@@ -121,12 +121,12 @@ pub fn show(paths: &[String], hwnd_isize: isize, screen_x: i32, screen_y: i32) -
 
         // 用户选择了某项：经 InvokeCommand 执行（命令 ID 需减去起始偏移）
         let mut invoked = false;
-        if cmd.0 != 0 {
+        if cmd.0 >= ID_CMD_FIRST as i32 {
             let verb_id = (cmd.0 as u32) - ID_CMD_FIRST;
             let mut info = CMINVOKECOMMANDINFO {
                 cbSize: std::mem::size_of::<CMINVOKECOMMANDINFO>() as u32,
                 hwnd,
-                // lpVerb 用 MAKEINTRESOURCE 约定：低位字为命令序号
+                // lpVerb 用 MAKEINTRESOURCE 约定：低位字为命令序号。
                 lpVerb: PCSTR(verb_id as usize as *const u8),
                 nShow: SW_SHOWNORMAL.0,
                 ..Default::default()
@@ -179,7 +179,7 @@ unsafe extern "system" fn shell_menu_subclass(
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{
-        WM_DRAWITEM, WM_MEASUREITEM, WM_MENUSELECT, WM_INITMENUPOPUP,
+        WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUSELECT,
     };
 
     // 仅转发与子菜单填充/自绘相关的消息；其余交给默认子类过程。
@@ -195,11 +195,15 @@ unsafe extern "system" fn shell_menu_subclass(
         let wp = WPARAM(wparam);
         let lp = LPARAM(lparam);
         if let Some(cm3) = &target.cm3 {
-            // IContextMenu3：带输出 LRESULT，返回其值（非零表示已处理，零也照常返回）
+            // IContextMenu3：HandleMenuMsg2 返回 S_OK 且 *plRes 非零表示 Shell 已处理，
+            // 直接返回其值；*plRes==0 表示 Shell 未处理该消息，须回退到默认子类过程，
+            // 否则会吞掉宿主窗口的默认处理，导致子菜单选中态/命令派发链断裂
+            // （表现为除静态 Verb 外的右键项点击无反应）。
             let mut lres = LRESULT(0);
             if cm3
                 .HandleMenuMsg2(umsg, wp, lp, Some(core::ptr::addr_of_mut!(lres)))
                 .is_ok()
+                && lres.0 != 0
             {
                 return lres.0;
             }
@@ -225,7 +229,9 @@ fn popup_shell_menu(
 ) -> windows::Win32::Foundation::BOOL {
     use windows::core::Interface;
     use windows::Win32::UI::Shell::{IContextMenu2, IContextMenu3};
-    use windows::Win32::UI::WindowsAndMessaging::{TrackPopupMenuEx, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        TrackPopupMenuEx, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    };
     use windows_sys::Win32::UI::Shell::{RemoveWindowSubclass, SetWindowSubclass};
 
     // QI 到 IContextMenu3（首选，含 HandleMenuMsg2）；失败回退 IContextMenu2（HandleMenuMsg）。
@@ -262,11 +268,8 @@ fn popup_shell_menu(
 
     if installed {
         unsafe {
-            let _ = RemoveWindowSubclass(
-                sys_hwnd,
-                Some(shell_menu_subclass),
-                SHELL_MENU_SUBCLASS_ID,
-            );
+            let _ =
+                RemoveWindowSubclass(sys_hwnd, Some(shell_menu_subclass), SHELL_MENU_SUBCLASS_ID);
         }
     }
     cmd
@@ -336,11 +339,12 @@ pub fn show_background(dir: &str, hwnd_isize: isize, screen_x: i32, screen_y: i3
         let cmd = popup_shell_menu(hwnd, hmenu, &ctx_menu, screen_x, screen_y);
 
         let mut invoked = false;
-        if cmd.0 != 0 {
+        if cmd.0 >= ID_CMD_FIRST as i32 {
             let verb_id = (cmd.0 as u32) - ID_CMD_FIRST;
             let mut info = CMINVOKECOMMANDINFO {
                 cbSize: std::mem::size_of::<CMINVOKECOMMANDINFO>() as u32,
                 hwnd,
+                // lpVerb 用 MAKEINTRESOURCE 约定：低位字为命令序号。
                 lpVerb: PCSTR(verb_id as usize as *const u8),
                 nShow: SW_SHOWNORMAL.0,
                 ..Default::default()

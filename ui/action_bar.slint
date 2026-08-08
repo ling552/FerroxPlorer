@@ -8,6 +8,7 @@ component ActionBtn inherits Rectangle {
     in property <string> glyph;
     in property <string> label;
     in property <bool> danger: false;
+    in property <string> tooltip: label;
     in property <bool> enabled: true;
     callback clicked;
     height: 32px;
@@ -33,6 +34,20 @@ component ActionBtn inherits Rectangle {
             color: danger ? Theme.danger : Theme.text;
             vertical-alignment: center;
         }
+    }
+    if touch.has-hover && root.tooltip != "": Rectangle {
+        y: root.height + 4px;
+        width: tip.preferred-width + 14px;
+        height: 24px;
+        border-radius: 6px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+        drop-shadow-blur: 10px;
+        drop-shadow-color: Theme.dark ? #00000055 : #00000033;
+        drop-shadow-offset-y: 2px;
+        z: 100;
+        tip := Text { text: root.tooltip; color: Theme.text; font-size: Theme.fs-tiny; horizontal-alignment: center; vertical-alignment: center; }
     }
     touch := TouchArea {
         enabled: root.enabled;
@@ -138,6 +153,7 @@ component TagMenuRow inherits Rectangle {
 // "标记"按钮：点击展开「重要 / 待归档 / 已完成」三项，对当前选中项统一切换标签
 component TagButton inherits Rectangle {
     in property <bool> enabled: true;
+    in property <string> tooltip: "标记选中项目";
     height: 32px;
     width: lay.preferred-width;
     border-radius: Theme.radius-btn;
@@ -172,6 +188,20 @@ component TagButton inherits Rectangle {
         enabled: root.enabled;
         mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
         clicked => { popup.show(); }
+    }
+    if touch.has-hover && root.tooltip != "": Rectangle {
+        y: root.height + 4px;
+        width: tip.preferred-width + 14px;
+        height: 24px;
+        border-radius: 6px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+        drop-shadow-blur: 10px;
+        drop-shadow-color: Theme.dark ? #00000055 : #00000033;
+        drop-shadow-offset-y: 2px;
+        z: 100;
+        tip := Text { text: root.tooltip; color: Theme.text; font-size: Theme.fs-tiny; horizontal-alignment: center; vertical-alignment: center; }
     }
     // 下拉菜单：左对齐按钮、向下展开
     popup := PopupWindow {
@@ -232,6 +262,7 @@ component TagButton inherits Rectangle {
 // "压缩"按钮：点击展开格式选择（ZIP / 7z / TAR / TAR.GZ），压缩选中项到当前目录
 component CompressButton inherits Rectangle {
     in property <bool> enabled: true;
+    in property <string> tooltip: "压缩选中项目";
     height: 32px;
     width: lay.preferred-width;
     border-radius: Theme.radius-btn;
@@ -266,6 +297,20 @@ component CompressButton inherits Rectangle {
         enabled: root.enabled;
         mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
         clicked => { popup.show(); }
+    }
+    if touch.has-hover && root.tooltip != "": Rectangle {
+        y: root.height + 4px;
+        width: tip.preferred-width + 14px;
+        height: 24px;
+        border-radius: 6px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+        drop-shadow-blur: 10px;
+        drop-shadow-color: Theme.dark ? #00000055 : #00000033;
+        drop-shadow-offset-y: 2px;
+        z: 100;
+        tip := Text { text: root.tooltip; color: Theme.text; font-size: Theme.fs-tiny; horizontal-alignment: center; vertical-alignment: center; }
     }
     // 下拉菜单：左对齐按钮、向下展开
     popup := PopupWindow {
@@ -308,6 +353,7 @@ component CompressButton inherits Rectangle {
 
 // "新增"按钮：点击展开系统注册的"新建"类型下拉菜单（文件夹 / 各类文件模板）
 component NewButton inherits Rectangle {
+    in property <string> tooltip;
     height: 32px;
     width: lay.preferred-width;
     border-radius: Theme.radius-btn;
@@ -328,6 +374,12 @@ component NewButton inherits Rectangle {
             font-size: Theme.fs-small;
             color: Theme.text;
             vertical-alignment: center;
+        }
+        if touch.has-hover && root.tooltip != "": Text {
+            text: root.tooltip;
+            font-size: Theme.fs-tiny;
+            color: Theme.muted;
+            y: root.height + 4px;
         }
         Text {
             text: "\u{E70D}";   // 向下箭头
@@ -395,23 +447,23 @@ export component ActionBar inherits Rectangle {
             horizontal-stretch: 0;
             spacing: 4px;
             ActionBtn {
-                glyph: "\u{E7A7}"; label: "恢复选中";
+                glyph: "\u{E7A7}"; label: "恢复选中"; tooltip: "恢复选中的项目";
                 enabled: AppState.sel-count > 0;
                 clicked => { AppState.restore-selected(); }
             }
             ActionBtn {
-                glyph: "\u{E8EB}"; label: "恢复全部";
+                glyph: "\u{E8EB}"; label: "恢复全部"; tooltip: "恢复回收站中的全部项目";
                 enabled: AppState.entries.length > 0;
                 clicked => { AppState.restore-all(); }
             }
             Divider {}
             ActionBtn {
-                glyph: "\u{E74D}"; label: "彻底删除选中"; danger: true;
+                glyph: "\u{E74D}"; label: "彻底删除选中"; tooltip: "永久删除选中的项目"; danger: true;
                 enabled: AppState.sel-count > 0;
                 clicked => { AppState.delete-permanent-selected(); }
             }
             ActionBtn {
-                glyph: "\u{E74D}"; label: "彻底删除全部"; danger: true;
+                glyph: "\u{E74D}"; label: "彻底删除全部"; tooltip: "永久清空回收站"; danger: true;
                 enabled: AppState.entries.length > 0;
                 clicked => { AppState.delete-permanent-all(); }
             }
@@ -421,44 +473,44 @@ export component ActionBar inherits Rectangle {
             horizontal-stretch: 0;
             spacing: 4px;
             ActionBtn {
-                glyph: "\u{E8C8}"; label: "复制";
+                glyph: "\u{E8C8}"; label: "复制"; tooltip: "复制选中项目";
                 enabled: AppState.sel-count > 0;
                 clicked => { AppState.copy-selected(); }
             }
             ActionBtn {
-                glyph: "\u{E8C6}"; label: "剪切";
+                glyph: "\u{E8C6}"; label: "剪切"; tooltip: "剪切选中项目";
                 enabled: AppState.sel-count > 0;
                 clicked => { AppState.cut-selected(); }
             }
             ActionBtn {
-                glyph: "\u{E77F}"; label: "粘贴";
+                glyph: "\u{E77F}"; label: "粘贴"; tooltip: "粘贴到当前目录";
                 enabled: AppState.can-paste;
                 clicked => { AppState.paste-here(); }
             }
             Divider {}
             ActionBtn {
-                glyph: "\u{E8AC}"; label: "重命名";
+                glyph: "\u{E8AC}"; label: "重命名"; tooltip: "重命名选中项目";
                 enabled: AppState.sel-count == 1;
                 clicked => { AppState.request-rename(); }
             }
             // 标记下拉：在「重命名」后、「删除」前
-            TagButton { enabled: AppState.sel-count > 0; }
+            TagButton { enabled: AppState.sel-count > 0; tooltip: "给选中项目添加或移除标签"; }
             ActionBtn {
-                glyph: "\u{E74D}"; label: "删除"; danger: true;
+                glyph: "\u{E74D}"; label: "删除"; tooltip: "删除选中项目"; danger: true;
                 enabled: AppState.sel-count > 0;
                 clicked => { AppState.delete-selected(); }
             }
             Divider {}
             // 压缩下拉：选择输出格式（ZIP / 7z / TAR / TAR.GZ），后台任务执行
-            CompressButton { enabled: AppState.sel-count > 0; }
+            CompressButton { enabled: AppState.sel-count > 0; tooltip: "压缩选中项目"; }
             // 交换左右面板：仅双面板显示，且不依赖选中状态
             if AppState.dual-pane: ActionBtn {
-                glyph: "\u{E8AB}"; label: "交换";
+                glyph: "\u{E8AB}"; label: "交换"; tooltip: "交换左右面板内容";
                 clicked => { AppState.swap-panes(); }
             }
             // 解压：仅选中单个 ZIP 归档时显示
             if AppState.sel-is-archive: ActionBtn {
-                glyph: "\u{E896}"; label: "解压";
+                glyph: "\u{E896}"; label: "解压"; tooltip: "解压选中的归档";
                 clicked => { AppState.extract-selected(); }
             }
         }
@@ -496,6 +548,7 @@ export component ActionBar inherits Rectangle {
 
         // 右侧"新增"按钮（回收站视图下不显示）
         if !root.in-recycle: NewButton {
+            tooltip: "新建文件或文件夹";
             horizontal-stretch: 0;
         }
     }

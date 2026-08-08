@@ -211,7 +211,11 @@ fn device_topology_signature() -> String {
         sig.push(';');
     }
     sig.push('|');
-    sig.push(if fs::recyclebin::is_empty().unwrap_or(true) { '0' } else { '1' });
+    sig.push(if fs::recyclebin::is_empty().unwrap_or(true) {
+        '0'
+    } else {
+        '1'
+    });
     sig
 }
 
@@ -255,7 +259,9 @@ fn bind_device_polling(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         #[cfg(windows)]
         {
             use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
-            unsafe { let _ = CoInitializeEx(None, COINIT_MULTITHREADED); }
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            }
         }
         let notify = |w: &slint::Weak<MainWindow>| {
             w.upgrade_in_event_loop(|ui| ui.global::<AppState>().invoke_devices_changed())
@@ -617,11 +623,12 @@ fn bind_layout(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             }
             ui_bridge::push_custom_tags(&ui, &c.borrow());
             // 侧栏标签分区需重建（新增节点 + 计数）
-            ui.global::<AppState>().set_nav_items(ui_bridge::build_sidebar(
-                &c.borrow().active_tab().history.current(),
-                &c.borrow().collapsed_sections,
-                &c.borrow().config,
-            ));
+            ui.global::<AppState>()
+                .set_nav_items(ui_bridge::build_sidebar(
+                    &c.borrow().active_tab().history.current(),
+                    &c.borrow().collapsed_sections,
+                    &c.borrow().config,
+                ));
             ui_bridge::update_selection_pane(&ui, &c.borrow(), toolbar_routes_right(&ui));
         }
     });
@@ -637,11 +644,12 @@ fn bind_layout(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                 core.config.save();
             }
             ui_bridge::push_custom_tags(&ui, &c.borrow());
-            ui.global::<AppState>().set_nav_items(ui_bridge::build_sidebar(
-                &c.borrow().active_tab().history.current(),
-                &c.borrow().collapsed_sections,
-                &c.borrow().config,
-            ));
+            ui.global::<AppState>()
+                .set_nav_items(ui_bridge::build_sidebar(
+                    &c.borrow().active_tab().history.current(),
+                    &c.borrow().collapsed_sections,
+                    &c.borrow().config,
+                ));
             reload_active_pane(&ui, &c);
         }
     });
@@ -653,7 +661,8 @@ fn bind_layout(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         if let Some(ui) = w.upgrade() {
             let r_path = {
                 let core = c.borrow();
-                core.entry_at(idx as usize).map(|e| e.path.clone())
+                core.pane_entry_at(toolbar_routes_right(&ui), idx as usize)
+                    .map(|e| e.path.clone())
             };
             if let Some(r_path) = r_path {
                 match fs::recyclebin::restore(&r_path) {
@@ -1361,49 +1370,50 @@ fn start_next_job(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         // task_control 永久卡在 Some，start_next_job 对后续复制/剪切/粘贴静默 return，
         // 表现为「复制粘贴大部分情况无法使用」。
         let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        fs::tasks::run(
-            job,
-            ctrl,
-            move |p| {
-                let w = w_progress.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = w.upgrade() {
-                        let st = ui.global::<AppState>();
-                        st.set_task_operation(p.operation.into());
-                        st.set_task_current_file(p.current_file.into());
-                        st.set_task_target(p.target.into());
-                        st.set_task_completed(p.completed);
-                        st.set_task_total(p.total);
-                        st.set_task_progress(p.fraction);
-                        st.set_task_speed(p.speed.into());
-                        st.set_task_eta(p.eta.into());
-                    }
-                });
-            },
-            move |q| {
-                // 遇顶层同名冲突：把回复通道存入桥，请主线程弹窗，随后阻塞等待用户选择
-                let (tx, rx) = std::sync::mpsc::channel();
-                *bridge.pending.lock().unwrap() = Some(tx);
-                let w = w_ask.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = w.upgrade() {
-                        let st = ui.global::<AppState>();
-                        st.set_conflict_name(q.name.into());
-                        st.set_conflict_operation(q.operation.into());
-                        st.set_conflict_src_info(q.src_info.into());
-                        st.set_conflict_dst_info(q.dst_info.into());
-                        st.set_conflict_is_dir(q.is_dir);
-                        st.set_conflict_apply_all(false);
-                        st.set_conflict_open(true);
-                    }
-                });
-                // 对话框被异常关闭 / 事件循环失效时默认跳过，保证工作线程不会永久阻塞
-                rx.recv().unwrap_or(fs::tasks::ConflictReply {
-                    decision: fs::tasks::ConflictDecision::Skip,
-                    apply_all: false,
-                })
-            },
-        )})) {
+            fs::tasks::run(
+                job,
+                ctrl,
+                move |p| {
+                    let w = w_progress.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = w.upgrade() {
+                            let st = ui.global::<AppState>();
+                            st.set_task_operation(p.operation.into());
+                            st.set_task_current_file(p.current_file.into());
+                            st.set_task_target(p.target.into());
+                            st.set_task_completed(p.completed);
+                            st.set_task_total(p.total);
+                            st.set_task_progress(p.fraction);
+                            st.set_task_speed(p.speed.into());
+                            st.set_task_eta(p.eta.into());
+                        }
+                    });
+                },
+                move |q| {
+                    // 遇顶层同名冲突：把回复通道存入桥，请主线程弹窗，随后阻塞等待用户选择
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    *bridge.pending.lock().unwrap() = Some(tx);
+                    let w = w_ask.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = w.upgrade() {
+                            let st = ui.global::<AppState>();
+                            st.set_conflict_name(q.name.into());
+                            st.set_conflict_operation(q.operation.into());
+                            st.set_conflict_src_info(q.src_info.into());
+                            st.set_conflict_dst_info(q.dst_info.into());
+                            st.set_conflict_is_dir(q.is_dir);
+                            st.set_conflict_apply_all(false);
+                            st.set_conflict_open(true);
+                        }
+                    });
+                    // 对话框被异常关闭 / 事件循环失效时默认跳过，保证工作线程不会永久阻塞
+                    rx.recv().unwrap_or(fs::tasks::ConflictReply {
+                        decision: fs::tasks::ConflictDecision::Skip,
+                        apply_all: false,
+                    })
+                },
+            )
+        })) {
             Ok(r) => r,
             Err(_) => fs::tasks::TaskResult {
                 ok: 0,
@@ -1438,7 +1448,9 @@ fn start_next_job(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                         {
                             continue;
                         }
-                        let Some(name) = src.file_name() else { continue };
+                        let Some(name) = src.file_name() else {
+                            continue;
+                        };
                         let dest = job_dst.join(name);
                         match job_kind {
                             fs::tasks::TaskKind::Copy => fs::index::add_path(&dest),
@@ -1517,13 +1529,57 @@ fn unique_device_name(parent_vpath: &str, base: &str) -> String {
     }
     let prefix = format!("{} (副本 {})", stem, std::process::id());
     for n in 1..10_000 {
-        let candidate = format!("{}{}{}", prefix, if n == 1 { String::new() } else { format!(" ({})", n) }, ext);
+        let candidate = format!(
+            "{}{}{}",
+            prefix,
+            if n == 1 {
+                String::new()
+            } else {
+                format!(" ({})", n)
+            },
+            ext
+        );
         if fs::devices::child_named(parent_vpath, &candidate).is_none() {
             return candidate;
         }
     }
     // 设备目录极端拥挤时仍返回一个基于进程 ID 的名称；上面的查重覆盖正常范围。
     format!("{} (副本 {}){}", stem, std::process::id(), ext)
+}
+
+fn select_created_and_edit(ui: &MainWindow, c: &Rc<RefCell<AppCore>>, right: bool, created: &str) {
+    // 归一化路径比较：新建项路径与过滤项路径可能因 \\?\ 长路径前缀、尾随分隔符、
+    // 大小写差异（Windows 盘符/UNC）或 device:// 形式不一致而逐字匹配失败，
+    // 导致新建后无法进入重命名。此处统一剥离前缀与尾分隔符后做大小写不敏感比较。
+    let norm = |s: &str| -> String {
+        let s = s.strip_prefix(r"\\?\").unwrap_or(s);
+        s.trim_end_matches(['/', '\\']).to_string()
+    };
+    let new_idx = {
+        let core = c.borrow();
+        let tab = core.pane(right);
+        let target = norm(created);
+        tab.filtered
+            .iter()
+            .position(|&ei| norm(&tab.entries[ei].path).eq_ignore_ascii_case(&target))
+    };
+    let Some(i) = new_idx else { return };
+    {
+        let mut core = c.borrow_mut();
+        let tab = core.pane_mut(right);
+        tab.selected.fill(false);
+        if i < tab.selected.len() {
+            tab.selected[i] = true;
+        }
+    }
+    if right {
+        ui_bridge::refresh_right_selection(ui, &c.borrow());
+        ui_bridge::update_selection_pane(ui, &c.borrow(), true);
+        ui.invoke_set_editing_right(i as i32);
+    } else {
+        ui_bridge::refresh_selection(ui, &c.borrow());
+        ui.invoke_set_editing(i as i32);
+    }
 }
 
 fn rename_in_pane(
@@ -2892,9 +2948,12 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             if fs::devices::is_device_path(&dst_str) {
                 let name = unique_device_name(&dst_str, "新建文件夹");
                 match fs::devices::create_folder(&dst_str, &name) {
-                    Ok(_) => {
+                    Ok(path) => {
                         ui.global::<AppState>()
                             .set_status_text("已在设备上新建文件夹".into());
+                        reload_active_pane(&ui, &c);
+                        select_created_and_edit(&ui, &c, right, &path);
+                        return;
                     }
                     Err(e) => {
                         ui.global::<AppState>()
@@ -2906,11 +2965,14 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             }
             match ops::new_folder(&dst, "新建文件夹") {
                 Ok(path) => {
-                    c.borrow_mut().record_undo(app::UndoAction::Create { path: path.clone() });
-                    // 启用后台索引时增量加入，使深层搜索立即可见
+                    c.borrow_mut()
+                        .record_undo(app::UndoAction::Create { path: path.clone() });
                     if c.borrow().config.settings.background_index {
                         fs::index::add_path(&path);
                     }
+                    reload_active_pane(&ui, &c);
+                    select_created_and_edit(&ui, &c, right, &path.to_string_lossy());
+                    return;
                 }
                 Err(error) => {
                     let args = vec![dst.as_os_str().to_os_string(), "新建文件夹".into()];
@@ -2946,9 +3008,12 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             if fs::devices::is_device_path(&dst_str) {
                 let name = unique_device_name(&dst_str, "新建文本文档.txt");
                 match fs::devices::create_file(&dst_str, &name) {
-                    Ok(_) => {
+                    Ok(path) => {
                         ui.global::<AppState>()
                             .set_status_text("已在设备上新建文件".into());
+                        reload_active_pane(&ui, &c);
+                        select_created_and_edit(&ui, &c, right, &path);
+                        return;
                     }
                     Err(e) => {
                         ui.global::<AppState>()
@@ -2960,16 +3025,17 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             }
             match ops::new_file(&dst, "新建文本文档.txt") {
                 Ok(path) => {
-                    c.borrow_mut().record_undo(app::UndoAction::Create { path: path.clone() });
+                    c.borrow_mut()
+                        .record_undo(app::UndoAction::Create { path: path.clone() });
                     if c.borrow().config.settings.background_index {
                         fs::index::add_path(&path);
                     }
+                    reload_active_pane(&ui, &c);
+                    select_created_and_edit(&ui, &c, right, &path.to_string_lossy());
+                    return;
                 }
                 Err(error) => {
-                    let args = vec![
-                        dst.as_os_str().to_os_string(),
-                        "新建文本文档.txt".into(),
-                    ];
+                    let args = vec![dst.as_os_str().to_os_string(), "新建文本文档.txt".into()];
                     let elevated = fs::elevated::retry_if_permission_denied(
                         &error,
                         fs::elevated::ElevatedOp::CreateFile,
@@ -3071,8 +3137,12 @@ fn bind_operations(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
             {
                 let core = c.borrow();
                 let tab = core.pane(right);
-                if let Some(entry) = tab.selected.iter().enumerate()
-                    .find(|(_, &s)| s).and_then(|(fi, _)| tab.entry_at(fi))
+                if let Some(entry) = tab
+                    .selected
+                    .iter()
+                    .enumerate()
+                    .find(|(_, &s)| s)
+                    .and_then(|(fi, _)| tab.entry_at(fi))
                 {
                     let path = Path::new(&entry.path);
                     let state = ui.global::<AppState>();
@@ -3268,35 +3338,9 @@ fn bind_new_menu(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
 
         reload_active_pane(&ui, &c);
 
-        // 在刷新后的列表中定位新建项（filtered 下标），选中并进入行内重命名
-        // （左右面板各有独立的 editing-index / r-editing-index）
+        // 刷新后的列表中定位新建项，并统一更新选择/详情状态后进入编辑。
         let created_str = created.to_string_lossy().to_string();
-        let new_idx = {
-            let core = c.borrow();
-            let tab = core.pane(right);
-            tab.filtered
-                .iter()
-                .position(|&ei| tab.entries[ei].path == created_str)
-        };
-        if let Some(i) = new_idx {
-            {
-                let mut core = c.borrow_mut();
-                let tab = core.pane_mut(right);
-                for s in tab.selected.iter_mut() {
-                    *s = false;
-                }
-                if i < tab.selected.len() {
-                    tab.selected[i] = true;
-                }
-            }
-            if right {
-                ui_bridge::refresh_right_selection(&ui, &c.borrow());
-                ui.invoke_set_editing_right(i as i32);
-            } else {
-                ui_bridge::update_selection(&ui, &c.borrow());
-                ui.invoke_set_editing(i as i32);
-            }
-        }
+        select_created_and_edit(&ui, &c, right, &created_str);
         ui.global::<AppState>()
             .set_status_text(format!("已新建「{}」", item.name).into());
     });
@@ -3314,7 +3358,7 @@ fn bind_context_menu_ext(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         if let Some(ui) = w.upgrade() {
             let target = {
                 let core = c.borrow();
-                core.entry_at(idx as usize)
+                core.pane_entry_at(toolbar_routes_right(&ui), idx as usize)
                     .map(|e| (e.is_dir, e.path.clone()))
             };
             if let Some((is_dir, path)) = target {
@@ -3345,7 +3389,7 @@ fn bind_context_menu_ext(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         if let Some(ui) = w.upgrade() {
             let target = {
                 let core = c.borrow();
-                core.entry_at(idx as usize)
+                core.pane_entry_at(toolbar_routes_right(&ui), idx as usize)
                     .map(|e| (e.is_dir, e.path.clone()))
             };
             if let Some((is_dir, path)) = target {
@@ -3612,7 +3656,7 @@ fn bind_context_menu_ext(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
         if let Some(ui) = w.upgrade() {
             let target = {
                 let core = c.borrow();
-                core.entry_at(idx as usize)
+                core.pane_entry_at(toolbar_routes_right(&ui), idx as usize)
                     .map(|e| (e.is_dir, e.path.clone()))
             };
             let Some((is_dir, path)) = target else { return };
@@ -4519,6 +4563,35 @@ fn bind_hash(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
                     fs::video_preview::stop();
                     fs::web_preview::stop();
                 }
+                if st.get_ql_kind() == 3 && !path.is_empty() {
+                    let show_hidden = c.borrow().config.settings.show_hidden;
+                    let show_protected = c.borrow().config.settings.show_protected;
+                    let ql_path = path.clone();
+                    let w_summary = ui.as_weak();
+                    std::thread::spawn(move || {
+                        let (dirs, files, size) = fs::preview::folder_summary(
+                            Path::new(&ql_path),
+                            show_hidden,
+                            show_protected,
+                        );
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = w_summary.upgrade() {
+                                let state = ui.global::<AppState>();
+                                if state.get_quicklook_open() && state.get_sel_path() == ql_path.as_str() {
+                                    state.set_ql_info(
+                                        format!(
+                                            "包含 {} 个子文件夹、{} 个文件\n文件总大小 {}",
+                                            dirs,
+                                            files,
+                                            fs::metadata::human_size(size)
+                                        )
+                                        .into(),
+                                    );
+                                }
+                            }
+                        });
+                    });
+                }
             }
         }
     });
@@ -4682,7 +4755,9 @@ fn set_quicklook_window_fullscreen(ui: &MainWindow, fullscreen: bool) {
         // 主窗口已经由 Slint no-frame 配置为无边框并自绘标题栏；这里仅切换
         // Borderless 全屏，不改 decorations，避免 Windows 临时重建第二套标题栏按钮。
         window.set_fullscreen(if fullscreen {
-            Some(winit::window::Fullscreen::Borderless(window.current_monitor()))
+            Some(winit::window::Fullscreen::Borderless(
+                window.current_monitor(),
+            ))
         } else {
             None
         });
@@ -4757,7 +4832,6 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-
 /// 视频轮询中的鼠标活动检测：光标在当前预览卡片内移动就显示控制条；
 /// 卡片外移动不会唤醒。静止满 5 秒后隐藏原生覆盖层。
 #[cfg(windows)]
@@ -4804,7 +4878,10 @@ fn poll_video_controls_visibility(ui: &MainWindow) {
     if hwnd.is_null() {
         return;
     }
-    let mut origin = POINT { x: rect.0, y: rect.1 };
+    let mut origin = POINT {
+        x: rect.0,
+        y: rect.1,
+    };
     if unsafe { ClientToScreen(hwnd, &mut origin) } == 0 {
         return;
     }
@@ -5143,7 +5220,11 @@ fn bind_tabs(ui: &MainWindow, core: &Rc<RefCell<AppCore>>) {
     state.on_open_settings_tab(move || {
         if let Some(ui) = w.upgrade() {
             // 已存在设置页则直接切换（不新增）；否则标签栏已满时拒绝新建
-            let has_settings = c.borrow().tabs.iter().any(|t| t.kind == app::TabKind::Settings);
+            let has_settings = c
+                .borrow()
+                .tabs
+                .iter()
+                .any(|t| t.kind == app::TabKind::Settings);
             if !has_settings && tabs_full(&ui, &c) {
                 ui.global::<AppState>()
                     .set_status_text("标签栏已满，请先关闭部分标签页".into());
@@ -5593,8 +5674,8 @@ unsafe extern "system" fn hit_test_wndproc(
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallWindowProcW, DefWindowProcW, GetWindowRect, IsZoomed, GWL_STYLE, HTBOTTOM,
-        HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT,
-        STYLESTRUCT, WM_NCACTIVATE, WM_NCHITTEST, WM_STYLECHANGING, WS_CAPTION, WS_SYSMENU,
+        HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, STYLESTRUCT,
+        WM_NCACTIVATE, WM_NCHITTEST, WM_STYLECHANGING, WS_CAPTION, WS_SYSMENU,
     };
 
     // winit 在退出 Borderless 全屏时会先恢复系统窗口样式，随后才交还事件循环；
@@ -5768,7 +5849,11 @@ fn set_native_window_icon(hwnd: isize) {
     unsafe {
         let hinst = GetModuleHandleW(std::ptr::null());
         for (which, cx, cy) in [
-            (ICON_BIG, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON)),
+            (
+                ICON_BIG,
+                GetSystemMetrics(SM_CXICON),
+                GetSystemMetrics(SM_CYICON),
+            ),
             (
                 ICON_SMALL,
                 GetSystemMetrics(SM_CXSMICON),

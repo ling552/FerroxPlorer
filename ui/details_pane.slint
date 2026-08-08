@@ -12,13 +12,16 @@ component info-row inherits HorizontalLayout {
         width: 74px;
         font-size: Theme.fs-small;
         color: Theme.subtle;
+        vertical-alignment: top;
     }
     Text {
         text: value;
+        min-width: 0px;
         font-size: Theme.fs-small;
         color: Theme.text;
         wrap: word-wrap;
         horizontal-stretch: 1;
+        vertical-alignment: top;
     }
 }
 
@@ -115,24 +118,26 @@ export component DetailsPane inherits Rectangle {
                                     width: 74px;
                                     font-size: Theme.fs-small;
                                     color: Theme.subtle;
-                                    vertical-alignment: center;
+                                    vertical-alignment: top;
                                 }
                                 // 已计算完成（sel-size 非占位「—」）：直接显示结果
                                 if !AppState.sel-is-dir || AppState.sel-size != "—": Text {
                                     text: AppState.sel-size;
+                                    min-width: 0px;
                                     font-size: Theme.fs-small;
                                     color: Theme.text;
                                     wrap: word-wrap;
                                     horizontal-stretch: 1;
-                                    vertical-alignment: center;
+                                    vertical-alignment: top;
                                 }
                                 // 自动计算模式（设置开启）：选中即后台统计，无按钮，期间显示计算中
                                 if AppState.sel-is-dir && AppState.sel-size == "—" && AppState.set-calc-size: Text {
                                     text: AppState.sel-size-calculating ? "计算中…" : "—";
+                                    min-width: 0px;
                                     font-size: Theme.fs-small;
                                     color: Theme.muted;
                                     horizontal-stretch: 1;
-                                    vertical-alignment: center;
+                                    vertical-alignment: top;
                                 }
                                 // 手动模式：文件夹且尚未计算时显示「计算」按钮（文字与边框用主题色）
                                 if AppState.sel-is-dir && AppState.sel-size == "—" && !AppState.set-calc-size: Rectangle {
@@ -161,6 +166,36 @@ export component DetailsPane inherits Rectangle {
                                 }
                             }
                             info-row { label: "修改时间"; value: AppState.sel-modified; }
+                            info-row { label: "创建时间"; value: AppState.sel-created; }
+                            info-row { label: "所有者"; value: AppState.sel-owner; }
+                            info-row { label: "属性"; value: AppState.sel-attributes; }
+                            // 打开方式仅文件（非目录）有意义，目录时为空则不占行
+                            if !AppState.sel-is-dir && AppState.sel-open-with != "": info-row {
+                                label: "打开方式"; value: AppState.sel-open-with;
+                            }
+                            // 标签：所选文件已打的内置/自定义标签命色标记（始终显示此行以保持一致性）
+                            info-row {
+                                label: "标签";
+                                value: {
+                                    if AppState.sel-tag-important && AppState.sel-tag-archive && AppState.sel-tag-done {
+                                        "重要, 待归档, 已完成"
+                                    } else if AppState.sel-tag-important && AppState.sel-tag-archive {
+                                        "重要, 待归档"
+                                    } else if AppState.sel-tag-important && AppState.sel-tag-done {
+                                        "重要, 已完成"
+                                    } else if AppState.sel-tag-archive && AppState.sel-tag-done {
+                                        "待归档, 已完成"
+                                    } else if AppState.sel-tag-important {
+                                        "重要"
+                                    } else if AppState.sel-tag-archive {
+                                        "待归档"
+                                    } else if AppState.sel-tag-done {
+                                        "已完成"
+                                    } else {
+                                        "未标记"
+                                    }
+                                }
+                            }
                         }
                     }
                 }

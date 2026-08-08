@@ -78,13 +78,20 @@ impl TabSession {
         let key = self.sort_key.clone();
         let asc = self.sort_asc;
         let folders_first = self.folders_first;
-        // 「此电脑」视图固定按盘符（路径）升序：驱动器 C:\ D:\ … 在前、便携设备在后。
-        // 若沿用按名称排序，卷标（如 "Data (D:)" < "Windows (C:)"）会导致 D 盘排在 C 盘前。
+        // 「此电脑」视图：本机硬盘/移动硬盘/U盘等真实盘符在前，便携设备(手机等)在最后。
+        // 若沿用按名称排序，卷标（如 "Data (D:)" < "Windows (C:)"）会导致 D 盘排在 C 盘前；
+        // 若仅按路径字典序，device://（'d'）会插到 E:\ F:\ 等 U 盘前面。故先按是否便携设备分组。
         let is_this_pc =
             self.history.current().to_string_lossy() == crate::fs::virtualfs::THIS_PC_PATH;
         if is_this_pc {
-            self.entries
-                .sort_by(|a, b| a.path.to_lowercase().cmp(&b.path.to_lowercase()));
+            self.entries.sort_by(|a, b| {
+                let a_dev = a.path.starts_with("device://");
+                let b_dev = b.path.starts_with("device://");
+                if a_dev != b_dev {
+                    return a_dev.cmp(&b_dev); // 便携设备(true)排在后面
+                }
+                a.path.to_lowercase().cmp(&b.path.to_lowercase())
+            });
         } else {
             self.entries.sort_by(|a, b| {
                 if folders_first && a.is_dir != b.is_dir {

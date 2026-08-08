@@ -52,20 +52,68 @@ const VIDEO_EXTS: &[&str] = &[
 /// 之外的特殊判断参考，当前无直接引用，保留以备未来按扩展名区分高亮等用途。
 #[allow(dead_code)]
 const TEXT_EXTS: &[&str] = &[
-    "txt", "md", "markdown", "log", "ini", "cfg", "conf", "toml", "yaml", "yml", "json", "xml",
-    "csv", "rs", "go", "py", "js", "ts", "jsx", "tsx", "c", "h", "cpp", "hpp", "cc", "cs", "java",
-    "kt", "rb", "php", "sh", "bat", "ps1", "css", "scss", "less", "html", "htm", "slint", "sql",
-    "lua", "vue", "svelte", "gradle", "properties", "env", "gitignore", "dockerfile", "makefile",
-    "gitattributes", "dockerignore", "npmignore", "editorconfig", "license", "readme", "lock",
+    "txt",
+    "md",
+    "markdown",
+    "log",
+    "ini",
+    "cfg",
+    "conf",
+    "toml",
+    "yaml",
+    "yml",
+    "json",
+    "xml",
+    "csv",
+    "rs",
+    "go",
+    "py",
+    "js",
+    "ts",
+    "jsx",
+    "tsx",
+    "c",
+    "h",
+    "cpp",
+    "hpp",
+    "cc",
+    "cs",
+    "java",
+    "kt",
+    "rb",
+    "php",
+    "sh",
+    "bat",
+    "ps1",
+    "css",
+    "scss",
+    "less",
+    "html",
+    "htm",
+    "slint",
+    "sql",
+    "lua",
+    "vue",
+    "svelte",
+    "gradle",
+    "properties",
+    "env",
+    "gitignore",
+    "dockerfile",
+    "makefile",
+    "gitattributes",
+    "dockerignore",
+    "npmignore",
+    "editorconfig",
+    "license",
+    "readme",
+    "lock",
 ];
 
 /// 二进制/可执行文件扩展名：预览时显示应用基本信息而非文本内容
 const BINARY_EXTS: &[&str] = &[
-    "exe", "msi", "dll", "sys", "com", "scr",
-    "iso", "bin", "dat", "img", "vhd", "vhdx",
-    "cab", "msu", "dmp", "pdb",
-    "deb", "rpm", "appimage",
-    "dmg", "pkg",
+    "exe", "msi", "dll", "sys", "com", "scr", "iso", "bin", "dat", "img", "vhd", "vhdx", "cab",
+    "msu", "dmp", "pdb", "deb", "rpm", "appimage", "dmg", "pkg",
 ];
 
 fn ext_of(path: &Path) -> String {
@@ -113,10 +161,7 @@ fn is_binary_kind(ext: &str) -> bool {
 
 /// 是否作为归档预览（与 operations::is_archive 一致的格式集合）
 fn is_archive_kind(ext: &str, _path: &Path) -> bool {
-    matches!(
-        ext,
-        "zip" | "7z" | "tar" | "gz" | "tgz"
-    )
+    matches!(ext, "zip" | "7z" | "tar" | "gz" | "tgz")
 }
 
 /// 读取文本文件首部，最多 `max_bytes` 字节并按 UTF-8 有损转换。
@@ -187,7 +232,8 @@ pub fn archive_listing(path: &Path) -> String {
                         break;
                     }
                     if let Ok(e) = entry {
-                        let name = e.path()
+                        let name = e
+                            .path()
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or_default();
                         let size = e.header().size().unwrap_or(0);
@@ -207,7 +253,8 @@ pub fn archive_listing(path: &Path) -> String {
                         break;
                     }
                     if let Ok(e) = entry {
-                        let name = e.path()
+                        let name = e
+                            .path()
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or_default();
                         let size = e.header().size().unwrap_or(0);
@@ -252,7 +299,11 @@ fn format_listing(items: &[(String, u64, bool)]) -> String {
     let _ = writeln!(out, "📦 归档内容 | 共 {} 项", items.len());
     let _ = writeln!(out, "   ├─ 📁 {} 个文件夹", dirs);
     let _ = writeln!(out, "   ├─ 📄 {} 个文件", files);
-    let _ = writeln!(out, "   └─ 💾 合计 {}\n", super::metadata::human_size(total));
+    let _ = writeln!(
+        out,
+        "   └─ 💾 合计 {}\n",
+        super::metadata::human_size(total)
+    );
     let _ = writeln!(out, "{}", "─".repeat(60));
     for (name, size, is_dir) in items {
         let _ = writeln!(
@@ -269,29 +320,33 @@ fn format_listing(items: &[(String, u64, bool)]) -> String {
     out
 }
 
-/// 文件夹顶层统计：返回 (子文件夹数, 文件数, 顶层文件总字节)。
-/// 使用与目录列表相同的过滤规则，保证详情数量与主视图一致。
+/// 文件夹递归统计：返回 (子文件夹数, 文件数, 文件总字节)。
+/// 使用与目录列表相同的过滤规则，且不跟随符号链接，避免循环遍历。
 pub fn folder_summary(path: &Path, show_hidden: bool, show_protected: bool) -> (usize, usize, u64) {
     let mut dirs = 0usize;
     let mut files = 0usize;
     let mut size = 0u64;
-    if let Ok(rd) = std::fs::read_dir(path) {
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            continue;
+        };
         for entry in rd.flatten() {
-            let meta = match entry.metadata() {
-                Ok(meta) => meta,
-                Err(_) => continue,
-            };
+            let Ok(meta) = entry.metadata() else { continue };
             let name = entry.file_name().to_string_lossy().to_string();
             if super::operations::is_hidden_entry(&name, &meta, show_hidden, show_protected) {
                 continue;
             }
             match entry.file_type() {
-                Ok(ft) if ft.is_dir() => dirs += 1,
-                Ok(_) => {
-                    files += 1;
-                    size += meta.len();
+                Ok(ft) if ft.is_dir() => {
+                    dirs += 1;
+                    stack.push(entry.path());
                 }
-                Err(_) => {}
+                Ok(ft) if ft.is_file() => {
+                    files += 1;
+                    size = size.saturating_add(meta.len());
+                }
+                _ => {}
             }
         }
     }

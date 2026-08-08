@@ -151,9 +151,24 @@ pub fn cached(path: &str, is_dir: bool, mtime: i64) -> Option<Arc<IconPixels>> {
     }
 }
 
-/// 获取请求对应的图标像素，命中缓存直接返回，否则提取并写入缓存。
-#[cfg(windows)]
+fn valid_pixels(pixels: &[u8], w: u32, h: u32) -> bool {
+    w > 0
+        && h > 0
+        && w.saturating_mul(h).saturating_mul(4) as usize == pixels.len()
+        && pixels.chunks_exact(4).any(|pixel| pixel[3] != 0)
+}
+
+/// 仅接受完整像素缓冲，避免无效系统图标覆盖内置回退图标。
+fn valid_icon(raw: Option<(Vec<u8>, u32, u32)>) -> Option<(Vec<u8>, u32, u32)> {
+    let (pixels, w, h) = raw?;
+    valid_pixels(&pixels, w, h).then_some((pixels, w, h))
+}
+
+
 pub fn load_cached_request(request: &IconRequest, size: u32) -> Option<Arc<IconPixels>> {
+    if size == 0 {
+        return None;
+    }
     if let Some(c) = cached_request(request) {
         return Some(c);
     }
@@ -187,7 +202,7 @@ pub fn load_cached_request(request: &IconRequest, size: u32) -> Option<Arc<IconP
         }
         (IconRequest::Device, _) => extract_device_icon(size),
     };
-    let (pixels, w, h) = raw?;
+    let (pixels, w, h) = valid_icon(raw)?;
     let arc = Arc::new(IconPixels { pixels, w, h });
     match kind {
         Kind::Type(k) => {
@@ -243,7 +258,7 @@ pub fn special_dir_icon_cached(path: &str, size: u32) -> Option<Arc<IconPixels>>
     if let Some(c) = path_cache().lock().ok()?.get(&key).cloned() {
         return Some(c);
     }
-    let (pixels, w, h) = extract(path, size)?;
+    let (pixels, w, h) = valid_icon(extract(path, size))?;
     let arc = Arc::new(IconPixels { pixels, w, h });
     if let Ok(mut c) = path_cache().lock() {
         c.insert(key, arc.clone());
@@ -583,6 +598,9 @@ pub fn extract_type_icon(ext: &str, is_dir: bool, size: u32) -> Option<(Vec<u8>,
     };
     use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, DrawIconEx, DI_NORMAL, HICON};
 
+    if size == 0 {
+        return None;
+    }
     // 目录与无扩展名普通文件都没有扩展名，必须由调用方明确区分属性。
     let name = if is_dir {
         "folder".to_string()
@@ -758,6 +776,14 @@ mod tests {
             Kind::Type(key) => (true, key),
             Kind::Path(key) => (false, key),
         }
+    }
+
+    #[test]
+    fn valid_icon_rejects_empty_or_truncated_buffers() {
+        assert!(valid_icon(Some((Vec::new(), 0, 0))).is_none());
+        assert!(valid_icon(Some((vec![0; 3], 1, 1))).is_none());
+        assert!(valid_icon(Some((vec![0; 4], 1, 1))).is_none());
+        assert!(valid_icon(Some((vec![0, 0, 0, 255], 1, 1))).is_some());
     }
 
     #[test]

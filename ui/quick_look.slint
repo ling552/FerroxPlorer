@@ -350,6 +350,7 @@ export component QuickLook inherits Rectangle {
                         }
                     }
                     Text {
+                        width: 100%;
                         text: AppState.ql-name;
                         font-size: 16px;
                         font-weight: 700;
@@ -358,11 +359,13 @@ export component QuickLook inherits Rectangle {
                         overflow: elide;
                     }
                     Text {
+                        width: 100%;
                         text: AppState.ql-info;
                         font-size: Theme.fs-body;
                         color: Theme.muted;
                         horizontal-alignment: center;
                         wrap: word-wrap;
+                        vertical-stretch: 1;
                     }
                 }
             }

@@ -6,6 +6,7 @@ component IconBtn inherits Rectangle {
     in property <string> glyph;
     in property <bool> active: false;
     in property <bool> disabled: false;
+    in property <string> tooltip;
     callback clicked;
     width: 36px;
     height: 36px;
@@ -21,6 +22,27 @@ component IconBtn inherits Rectangle {
         color: active ? Theme.primary : Theme.text;
         horizontal-alignment: center;
         vertical-alignment: center;
+    }
+    if touch.has-hover && root.tooltip != "": Rectangle {
+        x: 0px;
+        y: root.height + 6px;
+        width: tip.preferred-width + 16px;
+        height: 26px;
+        border-radius: 6px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+        drop-shadow-blur: 10px;
+        drop-shadow-color: Theme.dark ? #00000055 : #00000033;
+        drop-shadow-offset-y: 2px;
+        z: 100;
+        tip := Text {
+            text: root.tooltip;
+            color: Theme.text;
+            font-size: Theme.fs-tiny;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
     }
     touch := TouchArea {
         enabled: !disabled;
@@ -48,17 +70,17 @@ export component Toolbar inherits Rectangle {
         HorizontalLayout {
             spacing: 6px;
             IconBtn {
-                glyph: "\u{E72B}";   // Back 后退
+                glyph: "\u{E72B}"; tooltip: "后退";   // Back 后退
                 disabled: !root.cur-can-back;
                 clicked => { AppState.go-back(); }
             }
             IconBtn {
-                glyph: "\u{E72A}";   // Forward 前进
+                glyph: "\u{E72A}"; tooltip: "前进";   // Forward 前进
                 disabled: !root.cur-can-forward;
                 clicked => { AppState.go-forward(); }
             }
             IconBtn {
-                glyph: "\u{E74A}";   // Up 上级
+                glyph: "\u{E74A}"; tooltip: "上一级目录";   // Up 上级
                 clicked => { AppState.go-up(); }
             }
         }
@@ -293,29 +315,44 @@ export component Toolbar inherits Rectangle {
         // 右侧功能组
         HorizontalLayout {
             spacing: 6px;
-            IconBtn { glyph: "\u{E72C}"; clicked => { AppState.refresh(); } }   // Refresh 刷新
+            IconBtn { glyph: "\u{E72C}"; tooltip: "刷新当前目录"; clicked => { AppState.refresh(); } }   // Refresh 刷新
             IconBtn {
-                glyph: "\u{E721}";   // Search 搜索
+                glyph: "\u{E721}"; tooltip: "搜索文件";   // Search 搜索
                 active: AppState.omni-mode == "search";
                 clicked => { AppState.set-omni-mode(AppState.omni-mode == "search" ? "path" : "search"); }
             }
             IconBtn {
-                glyph: "\u{E80A}";   // Tiles 网格视图
+                glyph: "\u{E80A}"; tooltip: "网格视图";   // Tiles 网格视图
                 active: AppState.view-mode == "grid";
                 clicked => { AppState.set-view("grid"); }
             }
             IconBtn {
-                glyph: "\u{EA37}";   // List 列表视图
+                glyph: "\u{EA37}"; tooltip: "列表视图";   // List 列表视图
                 active: AppState.view-mode == "list";
                 clicked => { AppState.set-view("list"); }
             }
             IconBtn {
-                glyph: "\u{F0E2}";   // DualScreen 双面板（与网格/列表布局正交，可叠加）
+                glyph: ""; tooltip: "切换双面板";
                 active: AppState.dual-pane;
+                width: 36px;
+                Rectangle {
+                    width: 18px;
+                    height: 16px;
+                    x: (parent.width - 18px) / 2;
+                    y: (parent.height - 16px) / 2;
+                    border-width: 1px;
+                    border-color: AppState.dual-pane ? Theme.primary : Theme.text;
+                    Rectangle {
+                        x: 8px;
+                        width: 1px;
+                        height: 100%;
+                        background: AppState.dual-pane ? Theme.primary : Theme.text;
+                    }
+                }
                 clicked => { AppState.toggle-dual(); }
             }
             IconBtn {
-                glyph: "\u{E90D}";   // DockRight 详情面板
+                glyph: "\u{E90D}"; tooltip: "切换详情面板";   // DockRight 详情面板
                 active: AppState.show-details;
                 clicked => { AppState.toggle-details(); }
             }

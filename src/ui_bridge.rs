@@ -1505,9 +1505,7 @@ pub fn apply_ql_card_size(ui: &MainWindow, kind_code: i32, iw: i32, ih: i32, web
         4 => {
             let video_max_ch = max_ch;
             if iw > 0 && ih > 0 {
-                let fit = (max_cw / iw as f32)
-                    .min(video_max_ch / ih as f32)
-                    .min(1.0);
+                let fit = (max_cw / iw as f32).min(video_max_ch / ih as f32).min(1.0);
                 let mut width = iw as f32 * fit;
                 let mut height = ih as f32 * fit;
                 if width < 256.0 && height < 256.0 {
@@ -1526,8 +1524,8 @@ pub fn apply_ql_card_size(ui: &MainWindow, kind_code: i32, iw: i32, ih: i32, web
         // 文本/代码：渲染视图更大，源码视图中等
         2 if web_mode => (880.0_f32.min(max_cw), max_ch),
         2 => (680.0_f32.min(max_cw), 520.0_f32.min(max_ch)),
-        // 文件夹：紧凑（图标 + 名称 + 两行统计，不留大片空白）
-        3 => (420.0, 300.0),
+        // 文件夹：紧凑但至少容纳两行统计文本与底部提示栏
+        3 => (420.0, 340.0),
         // 其它信息：更紧凑
         _ => (420.0, 264.0),
     };
@@ -1538,6 +1536,7 @@ pub fn apply_ql_card_size(ui: &MainWindow, kind_code: i32, iw: i32, ih: i32, web
 
 /// 填充 Quick Look 预览内容：根据选中项类型设置 ql-* 属性。
 /// `right` 为真时预览右侧面板的选中项（双面板右侧活动）。
+/// 文件夹递归统计放到调用方后台执行，避免空格键阻塞 UI。
 /// 返回是否成功设置（无选中项返回 false，调用方据此决定是否打开浮层）。
 pub fn fill_quicklook(ui: &MainWindow, core: &AppCore, right: bool) -> bool {
     use crate::fs::preview::{self, PreviewKind};
@@ -1660,21 +1659,8 @@ pub fn fill_quicklook(ui: &MainWindow, core: &AppCore, right: bool) -> bool {
             state.set_ql_text(listing.into());
         }
         PreviewKind::Folder => {
-            let (dirs, files, fsize) = preview::folder_summary(
-                path,
-                core.config.settings.show_hidden,
-                core.config.settings.show_protected,
-            );
             state.set_ql_subtitle("文件夹".into());
-            state.set_ql_info(
-                format!(
-                    "包含 {} 个子文件夹、{} 个文件\n顶层文件合计 {}",
-                    dirs,
-                    files,
-                    metadata::human_size(fsize)
-                )
-                .into(),
-            );
+            state.set_ql_info("正在计算子项目与文件总大小…".into());
         }
         PreviewKind::Info => {
             state.set_ql_subtitle(size_text.into());
