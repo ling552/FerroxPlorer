@@ -32,8 +32,11 @@ export component DetailsPane inherits Rectangle {
     border-radius: Theme.radius-card;
     clip: true;
 
+    // 不再手动设 viewport-height: self.visible-height——它会把 viewport 锁定成
+    // 可视高度，内容（长文件名换行 / 多字段）超出时无法滚动并把字段压挤截断。
+    // 让 ScrollView 按内容自动计算 viewport 高度，超出可视区即可垂直滚动，
+    // 内部 padding-bottom 也能正确露出，保证末行与底部留有间距。
     ScrollView {
-        viewport-height: self.visible-height;
         VerticalLayout {
             padding: 16px;
             padding-bottom: 24px;
@@ -70,15 +73,24 @@ export component DetailsPane inherits Rectangle {
             }
 
             if AppState.has-selection: card := Rectangle {
+                // 高度严格跟随内部内容：Rectangle 自身 preferred-size 为 0x0，
+                // 不会把子 layout 的内容高度向上透传给 ScrollView 的 viewport，
+                // 导致 viewport 被锁定在可视高度、超出部分被 clip 裁掉（长文件名
+                // 换行 / 多字段时底部「属性/标签」被切掉）。用 min-height 绑定内部
+                // layout 的 preferred-height，卡片才能在 ScrollView 中撑到内容全高，
+                // 超出可视区时正确滚动、末行间距也得以露出。
+                min-height: card-content.preferred-height;
                 border-radius: 14px;
                 border-width: 1px;
                 border-color: Theme.border;
                 background: Theme.surface;
                 clip: true;
-                VerticalLayout {
-                    // 预览视觉块：有缩略图时直接渲染位图，否则渲染对应矢量图标
+                card-content := VerticalLayout {
+                    // 预览视觉块：有缩略图时直接渲染位图，否则渲染对应矢量图标。
+                    // 高度自适应：有真实缩略图沿用 150px；纯矢量图标用 120px，
+                    // 与下方信息区比例更协调，长文件名换行时不至于把字段挤满。
                     Rectangle {
-                        height: 150px;
+                        height: AppState.sel-has-thumb ? 150px : 120px;
                         background: AppState.sel-has-thumb
                             ? Theme.surface-2
                             : @linear-gradient(135deg, #0078d4 0%, #60cdff 100%);
@@ -92,6 +104,7 @@ export component DetailsPane inherits Rectangle {
                     }
                     VerticalLayout {
                         padding: 14px;
+                        padding-bottom: 20px;
                         spacing: 4px;
                         Text {
                             text: AppState.sel-name;
@@ -109,7 +122,7 @@ export component DetailsPane inherits Rectangle {
                         // 信息列表
                         VerticalLayout {
                             padding-top: 10px;
-                            spacing: 8px;
+                            spacing: 10px;
                             info-row { label: "位置"; value: AppState.sel-location; }
                             // 大小：文件直接显示；文件夹默认显示「计算」按钮，
                             // 点击后台递归统计总大小（含所有子文件），完成后回填此处
